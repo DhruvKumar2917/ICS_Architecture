@@ -1,5 +1,7 @@
 import pandas as pd
+
 from parsers.text_parser import build_graph_from_edges, clean_name
+
 
 
 def table_to_graph(path: str):
