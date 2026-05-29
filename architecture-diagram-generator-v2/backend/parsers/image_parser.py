@@ -5,20 +5,23 @@ import requests
 from pathlib import Path
 from PIL import Image
 
-print("✅ NEW IMAGE PARSER LOADED - STRUCTURED JSON VERSION")
+from parsers.ocr_parser import extract_ocr_text
+
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
-VISION_MODEL = "qwen2.5vl"
+
+# Use llava if qwen2.5vl is too heavy for your laptop
+VISION_MODEL = "llava"
+# VISION_MODEL = "qwen2.5vl"
 
 
 def preprocess_image(image_path):
     """
-    Resize large images before sending to Qwen2.5VL.
-    This helps reduce processing time.
+    Resize large images before sending to the model.
     """
     img = Image.open(image_path).convert("RGB")
 
-    max_width = 1400
+    max_width = 1000
 
     if img.width > max_width:
         ratio = max_width / img.width
@@ -33,9 +36,7 @@ def preprocess_image(image_path):
 
 def extract_json(text):
     """
-    Extract JSON object from model response.
-    Sometimes model returns explanation before/after JSON.
-    This function extracts only the JSON part.
+    Extract JSON from model response.
     """
     try:
         return json.loads(text)
@@ -55,63 +56,78 @@ def extract_json(text):
 
 def image_to_graph(image_path):
     try:
-        # Resize image first
+        # 1. OCR first
+        ocr_text = extract_ocr_text(image_path)
+
+        print("\n===== OCR TEXT =====")
+        print(ocr_text)
+        print("===== END OCR TEXT =====\n")
+
+        # 2. Preprocess image for vision model
         image_path = preprocess_image(image_path)
 
         with open(image_path, "rb") as img:
             encoded = base64.b64encode(img.read()).decode("utf-8")
 
-        prompt = """
+        # 3. Give both image and OCR text to the model
+        prompt = f"""
 You are an Industrial Control System architecture extractor.
 
-Your task is to analyze the uploaded architecture image and extract structured JSON.
+Your task is to extract structured JSON from the architecture image.
 
-Do NOT draw a diagram.
-Do NOT return nodes and edges.
+You are given:
+1. The architecture image
+2. OCR text extracted from the image
+
+Use the OCR text to improve label recognition.
+Use the image to understand layout and connections.
+
+OCR TEXT:
+{ocr_text}
+
 Return ONLY valid JSON.
-Do NOT write explanation.
-Do NOT use markdown.
-Do NOT wrap JSON inside ```.
+Do not write explanation.
+Do not use markdown.
+Do not wrap JSON inside ```.
 
 Required JSON format:
 
-{
+{{
   "roles": [
-    {
+    {{
       "id": "vendor_operator",
       "name": "Vendor Operator",
       "description": "Role inferred from vendor control room"
-    }
+    }}
   ],
   "assets": [
-    {
-      "id": "oem_scada_server",
-      "name": "OEM SCADA Server",
-      "type": "server",
-      "zone": "wind_turbine_control_center",
-      "criticality": "high"
-    }
+    {{
+      "id": "plc",
+      "name": "PLC",
+      "type": "control_device",
+      "zone": "turbine_local_control",
+      "criticality": "critical"
+    }}
   ],
   "permissions": [
-    {
+    {{
       "subject": "vendor_operator",
       "object": "customer_vpn",
       "action": "establish_vpn",
       "reason": "Vendor operator can access through VPN"
-    }
+    }}
   ],
   "conduits": [
-    {
+    {{
       "source": "customer_vpn",
       "target": "vendor_firewall",
       "channel": "VPN connection",
       "enforcement": "vendor_firewall"
-    }
+    }}
   ]
-}
+}}
 
-Important extraction rules:
-
+Extraction rules:
 1. Extract every visible architecture component as an asset.
 2. Use zones/rooms as the zone value of assets.
 3. Extract visible connection lines as conduits.
@@ -129,8 +145,7 @@ Important extraction rules:
 14. Return only this structure:
     roles, assets, permissions, conduits.
 
-For this type of wind-farm ICS image, look carefully for these components if visible:
-
+Important labels that may appear:
 - OEM SCADA Server
 - PCN
 - OEM Firewall
@@ -164,7 +179,7 @@ For this type of wind-farm ICS image, look carefully for these components if vis
                 "stream": False,
                 "options": {
                     "temperature": 0,
-                    "num_predict": 2000
+                    "num_predict": 1800
                 }
             },
             timeout=240
@@ -175,14 +190,15 @@ For this type of wind-farm ICS image, look carefully for these components if vis
         result = response.json()
         raw_text = result.get("response", "")
 
-        print("\n===== RAW QWEN2.5VL OUTPUT =====")
+        print("\n===== RAW VISION MODEL OUTPUT =====")
         print(raw_text)
-        print("===== END RAW QWEN2.5VL OUTPUT =====\n")
+        print("===== END RAW VISION MODEL OUTPUT =====\n")
 
         graph = extract_json(raw_text)
 
         if graph:
             return {
+                "ocr_text": ocr_text,
                 "roles": graph.get("roles", []),
                 "assets": graph.get("assets", []),
                 "permissions": graph.get("permissions", []),
@@ -190,6 +206,7 @@ For this type of wind-farm ICS image, look carefully for these components if vis
             }
 
         return {
+            "ocr_text": ocr_text,
             "roles": [],
             "assets": [],
             "permissions": [],
@@ -206,13 +223,22 @@ For this type of wind-farm ICS image, look carefully for these components if vis
             "error": "Ollama is not running. Start Ollama and check http://localhost:11434"
         }
 
+    except requests.exceptions.HTTPError as e:
+        return {
+            "roles": [],
+            "assets": [],
+            "permissions": [],
+            "conduits": [],
+            "error": f"Ollama HTTP error: {e.response.status_code} - {e.response.text}"
+        }
+
     except requests.exceptions.Timeout:
         return {
             "roles": [],
             "assets": [],
             "permissions": [],
             "conduits": [],
-            "error": "Qwen2.5VL timed out. Try a smaller or cropped image."
+            "error": "Vision model timed out. Try smaller/cropped image."
         }
 
     except Exception as e:
