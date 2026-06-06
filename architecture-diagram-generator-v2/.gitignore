@@ -11,3 +11,10 @@ backend/uploads/
 
 # Environment files
 .env
+
+# Frontend build output
+frontend/dist/
+
+# Node modules
+node_modules/
+frontend/node_modules/
