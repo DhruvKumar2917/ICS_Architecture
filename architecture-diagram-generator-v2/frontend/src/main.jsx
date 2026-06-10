@@ -4,12 +4,16 @@ import ReactFlow, {
   Background,
   Controls,
   MiniMap,
+  Panel,
   addEdge,
   useNodesState,
   useEdgesState,
   MarkerType,
   Handle,
-  Position
+  Position,
+  ReactFlowProvider,
+  useViewport,
+  useReactFlow
 } from "reactflow";
 import "reactflow/dist/style.css";
 import axios from "axios";
@@ -128,6 +132,240 @@ const ICSNode = memo(({ data }) => {
 
 const nodeTypes = {
   icsNode: ICSNode
+};
+
+// Custom interactive scrollbar component for ReactFlow viewport
+const CustomScrollbars = () => {
+  const { x, y, zoom } = useViewport();
+  const { setViewport, getNodes } = useReactFlow();
+  const [containerSize, setContainerSize] = useState({ width: 800, height: 600 });
+  const [isDraggingH, setIsDraggingH] = useState(false);
+  const [isDraggingV, setIsDraggingV] = useState(false);
+
+  useEffect(() => {
+    const handleResize = () => {
+      const rfEl = document.querySelector(".react-flow");
+      if (rfEl) {
+        setContainerSize({
+          width: rfEl.clientWidth,
+          height: rfEl.clientHeight
+        });
+      }
+    };
+    const timer = setTimeout(handleResize, 200);
+    window.addEventListener("resize", handleResize);
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener("resize", handleResize);
+    };
+  }, []);
+
+  const nodes = getNodes();
+  if (nodes.length === 0) return null;
+
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+
+  nodes.forEach((node) => {
+    if (!node.parentNode) {
+      const nx = node.position.x;
+      const ny = node.position.y;
+      let w = 180;
+      let h = 80;
+      if (node.style) {
+        if (typeof node.style.width === 'number') w = node.style.width;
+        else if (typeof node.style.width === 'string') w = parseInt(node.style.width, 10) || 180;
+
+        if (typeof node.style.height === 'number') h = node.style.height;
+        else if (typeof node.style.height === 'string') h = parseInt(node.style.height, 10) || 80;
+      }
+      if (nx < minX) minX = nx;
+      if (nx + w > maxX) maxX = nx + w;
+      if (ny < minY) minY = ny;
+      if (ny + h > maxY) maxY = ny + h;
+    }
+  });
+
+  if (minX === Infinity) return null;
+
+  const margin = 100;
+  const W_total = (maxX - minX) + 2 * margin;
+  const H_total = (maxY - minY) + 2 * margin;
+  const total_minX = minX - margin;
+  const total_minY = minY - margin;
+
+  const W_visible = containerSize.width / zoom;
+  const H_visible = containerSize.height / zoom;
+
+  const showH = W_total > W_visible;
+  const showV = H_total > H_visible;
+
+  if (!showH && !showV) return null;
+
+  const trackMargin = 20;
+  const scrollbarThickness = 8;
+  const S_width = containerSize.width - 2 * trackMargin - (showV ? 20 : 0);
+  const thumbWidth = Math.max(40, S_width * Math.min(1, W_visible / W_total));
+  const X_scroll = (-x / zoom) - total_minX;
+  const scrollFractionX = Math.max(0, Math.min(1, X_scroll / (W_total - W_visible)));
+  const thumbLeft = (S_width - thumbWidth) * scrollFractionX;
+
+  const S_height = containerSize.height - 2 * trackMargin - (showH ? 20 : 0);
+  const thumbHeight = Math.max(40, S_height * Math.min(1, H_visible / H_total));
+  const Y_scroll = (-y / zoom) - total_minY;
+  const scrollFractionY = Math.max(0, Math.min(1, Y_scroll / (H_total - H_visible)));
+  const thumbTop = (S_height - thumbHeight) * scrollFractionY;
+
+  const handleMouseDownH = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingH(true);
+    const startClientX = e.clientX;
+    const startThumbLeft = thumbLeft;
+
+    const handleMouseMove = (moveEvent) => {
+      const deltaX = moveEvent.clientX - startClientX;
+      let newThumbLeft = startThumbLeft + deltaX;
+      newThumbLeft = Math.max(0, Math.min(S_width - thumbWidth, newThumbLeft));
+      const newFractionX = newThumbLeft / (S_width - thumbWidth);
+      const newXScroll = newFractionX * (W_total - W_visible);
+      const newX = -(newXScroll + total_minX) * zoom;
+      setViewport({ x: newX, y, zoom });
+    };
+
+    const handleMouseUp = () => {
+      setIsDraggingH(false);
+      document.removeEventListener("mousemove", handleMouseMove);
+      document.removeEventListener("mouseup", handleMouseUp);
+    };
+
+    document.addEventListener("mousemove", handleMouseMove);
+    document.addEventListener("mouseup", handleMouseUp);
+  };
+
+  const handleMouseDownV = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingV(true);
+    const startClientY = e.clientY;
+    const startThumbTop = thumbTop;
+
+    const handleMouseMove = (moveEvent) => {
+      const deltaY = moveEvent.clientY - startClientY;
+      let newThumbTop = startThumbTop + deltaY;
+      newThumbTop = Math.max(0, Math.min(S_height - thumbHeight, newThumbTop));
+      const newFractionY = newThumbTop / (S_height - thumbHeight);
+      const newYScroll = newFractionY * (H_total - H_visible);
+      const newY = -(newYScroll + total_minY) * zoom;
+      setViewport({ x, y: newY, zoom });
+    };
+
+    const handleMouseUp = () => {
+      setIsDraggingV(false);
+      document.removeEventListener("mousemove", handleMouseMove);
+      document.removeEventListener("mouseup", handleMouseUp);
+    };
+
+    document.addEventListener("mousemove", handleMouseMove);
+    document.addEventListener("mouseup", handleMouseUp);
+  };
+
+  const handleTrackClickH = (e) => {
+    if (e.target.className === "scrollbar-thumb") return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const clickX = e.clientX - rect.left;
+    let newThumbLeft = clickX - thumbWidth / 2;
+    newThumbLeft = Math.max(0, Math.min(S_width - thumbWidth, newThumbLeft));
+    const newFractionX = newThumbLeft / (S_width - thumbWidth);
+    const newXScroll = newFractionX * (W_total - W_visible);
+    const newX = -(newXScroll + total_minX) * zoom;
+    setViewport({ x: newX, y, zoom });
+  };
+
+  const handleTrackClickV = (e) => {
+    if (e.target.className === "scrollbar-thumb") return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const clickY = e.clientY - rect.top;
+    let newThumbTop = clickY - thumbHeight / 2;
+    newThumbTop = Math.max(0, Math.min(S_height - thumbHeight, newThumbTop));
+    const newFractionY = newThumbTop / (S_height - thumbHeight);
+    const newYScroll = newFractionY * (H_total - H_visible);
+    const newY = -(newYScroll + total_minY) * zoom;
+    setViewport({ x, y: newY, zoom });
+  };
+
+  return (
+    <>
+      {showH && (
+        <Panel position="bottom-left" style={{ left: `${trackMargin}px`, bottom: "8px", margin: 0, pointerEvents: "none" }}>
+          <div
+            className={`custom-scrollbar horizontal ${isDraggingH ? "active" : ""}`}
+            style={{
+              width: `${S_width}px`,
+              height: `${scrollbarThickness}px`,
+              background: "rgba(30, 41, 59, 0.5)",
+              borderRadius: "4px",
+              cursor: "pointer",
+              pointerEvents: "all",
+              position: "relative"
+            }}
+            onClick={handleTrackClickH}
+          >
+            <div
+              className="scrollbar-thumb"
+              style={{
+                position: "absolute",
+                left: `${thumbLeft}px`,
+                top: 0,
+                width: `${thumbWidth}px`,
+                height: "100%",
+                background: "rgba(148, 163, 184, 0.7)",
+                borderRadius: "4px",
+                cursor: "grab",
+                transition: "background 0.15s ease"
+              }}
+              onMouseDown={handleMouseDownH}
+            />
+          </div>
+        </Panel>
+      )}
+      {showV && (
+        <Panel position="top-right" style={{ right: "8px", top: `${trackMargin}px`, margin: 0, pointerEvents: "none" }}>
+          <div
+            className={`custom-scrollbar vertical ${isDraggingV ? "active" : ""}`}
+            style={{
+              height: `${S_height}px`,
+              width: `${scrollbarThickness}px`,
+              background: "rgba(30, 41, 59, 0.5)",
+              borderRadius: "4px",
+              cursor: "pointer",
+              pointerEvents: "all",
+              position: "relative"
+            }}
+            onClick={handleTrackClickV}
+          >
+            <div
+              className="scrollbar-thumb"
+              style={{
+                position: "absolute",
+                top: `${thumbTop}px`,
+                left: 0,
+                height: `${thumbHeight}px`,
+                width: "100%",
+                background: "rgba(148, 163, 184, 0.7)",
+                borderRadius: "4px",
+                cursor: "grab",
+                transition: "background 0.15s ease"
+              }}
+              onMouseDown={handleMouseDownV}
+            />
+          </div>
+        </Panel>
+      )}
+    </>
+  );
 };
 
 function layoutGraph(nodes, edges) {
@@ -714,6 +952,9 @@ function App() {
               </button>
             </div>
             <div className="view-legend">
+              <span className="legend-hint" style={{ marginRight: 12, borderRight: "1px solid #334155", paddingRight: 12, color: "#94a3b8" }}>
+                💡 Scroll to Pan | Ctrl + Scroll to Zoom
+              </span>
               <span className="legend-item"><span className="dot red"></span> Critical</span>
               <span className="legend-item"><span className="dot orange"></span> High</span>
               <span className="legend-item"><span className="dot blue"></span> Secure Enforcement</span>
@@ -729,14 +970,25 @@ function App() {
           onConnect={onConnect}
           nodeTypes={nodeTypes}
           fitView
+          fitViewOptions={{ minZoom: 0.2, maxZoom: 1.2 }}
+          minZoom={0.1}
+          maxZoom={2}
+          panOnScroll={true}
+          panOnScrollMode="free"
+          zoomOnScroll={false}
         >
           <Background color="#cbd5e1" gap={16} />
           <Controls />
           <MiniMap nodeColor={(n) => typeColors[n.type] || "#ffffff"} />
+          <CustomScrollbars />
         </ReactFlow>
       </main>
     </div>
   );
 }
 
-createRoot(document.getElementById("root")).render(<App />);
+createRoot(document.getElementById("root")).render(
+  <ReactFlowProvider>
+    <App />
+  </ReactFlowProvider>
+);

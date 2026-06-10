@@ -5,11 +5,12 @@ from collections import defaultdict
 logger = logging.getLogger(__name__)
 
 # Spatial Layout Constants for React Flow
-VERTICAL_SPACING = 250         # Y-axis distance between Purdue Layers
-HORIZONTAL_NODE_SPACING = 300  # X-axis distance between sibling nodes
-ZONE_PADDING = 100             # Internal padding for the Zone container
-MIN_ZONE_WIDTH = 600           # Minimum width for a zone container
-ZONE_MARGIN = 150              # Padding between different Zone containers
+VERTICAL_SPACING = 160         # Y-axis distance between Purdue Layers
+HORIZONTAL_NODE_SPACING = 210  # X-axis distance between sibling nodes
+ZONE_PADDING = 60              # Internal padding for the Zone container
+MIN_ZONE_WIDTH = 400           # Minimum width for a zone container
+ZONE_MARGIN = 80               # Padding between different Zone containers
+NODE_HEIGHT = 100              # Approximate rendered height of an ICS node
 
 class ICSAnalysisDAGBuilder:
     """
@@ -134,17 +135,32 @@ class ICSAnalysisDAGBuilder:
         rf_nodes = []
         rf_edges = []
         
-        zone_bounds = defaultdict(lambda: {"min_layer": float('inf'), "max_layer": 0, "max_nodes_per_layer": 0})
-        zone_layer_nodes = defaultdict(lambda: defaultdict(list))
+        # First pass: collect raw layer indices per zone
+        raw_zone_layer_nodes = defaultdict(lambda: defaultdict(list))
         
         for node_id, meta in self.layer_matrix.items():
             if not self.dag_view.has_node(node_id): continue
             layer_idx = meta.get("layer", 0)
             zone_id = meta.get("zone", "unassigned_zone")
-            
-            zone_layer_nodes[zone_id][layer_idx].append(node_id)
-            zone_bounds[zone_id]["min_layer"] = min(zone_bounds[zone_id]["min_layer"], layer_idx)
-            zone_bounds[zone_id]["max_layer"] = max(zone_bounds[zone_id]["max_layer"], layer_idx)
+            raw_zone_layer_nodes[zone_id][layer_idx].append(node_id)
+        
+        # Compress layer indices globally to eliminate gaps (e.g. 0,3,4,6 → 0,1,2,3)
+        all_layers = set()
+        for layers in raw_zone_layer_nodes.values():
+            all_layers.update(layers.keys())
+        sorted_layers = sorted(all_layers)
+        layer_remap = {old: new for new, old in enumerate(sorted_layers)}
+        
+        # Rebuild with compressed indices
+        zone_layer_nodes = defaultdict(lambda: defaultdict(list))
+        zone_bounds = defaultdict(lambda: {"min_layer": float('inf'), "max_layer": 0, "max_nodes_per_layer": 0})
+        
+        for zone_id, layers in raw_zone_layer_nodes.items():
+            for old_idx, nodes in layers.items():
+                new_idx = layer_remap[old_idx]
+                zone_layer_nodes[zone_id][new_idx] = nodes
+                zone_bounds[zone_id]["min_layer"] = min(zone_bounds[zone_id]["min_layer"], new_idx)
+                zone_bounds[zone_id]["max_layer"] = max(zone_bounds[zone_id]["max_layer"], new_idx)
 
         # Calculate Dynamic Widths based on the widest layer in each zone
         for zone_id, layers in zone_layer_nodes.items():

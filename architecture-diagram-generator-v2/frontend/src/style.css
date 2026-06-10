@@ -677,3 +677,47 @@ button:disabled {
   background: rgba(15, 23, 42, 0.08) !important;
   border-color: #64748b !important;
 }
+
+/* Custom Scrollbars Styling */
+.custom-scrollbar {
+  transition: background 0.2s ease, height 0.2s ease, width 0.2s ease, opacity 0.2s ease;
+  opacity: 0.6;
+}
+
+.custom-scrollbar:hover,
+.custom-scrollbar.active {
+  background: rgba(30, 41, 59, 0.75) !important;
+  opacity: 1;
+}
+
+.custom-scrollbar.horizontal:hover,
+.custom-scrollbar.horizontal.active {
+  height: 12px !important;
+}
+
+.custom-scrollbar.vertical:hover,
+.custom-scrollbar.vertical.active {
+  width: 12px !important;
+}
+
+.custom-scrollbar .scrollbar-thumb {
+  transition: background 0.15s ease, opacity 0.15s ease;
+}
+
+.custom-scrollbar .scrollbar-thumb:hover {
+  background: #3b82f6 !important;
+}
+
+.custom-scrollbar.active .scrollbar-thumb,
+.custom-scrollbar .scrollbar-thumb:active {
+  background: #2563eb !important;
+  cursor: grabbing !important;
+}
+
+/* Legend hint text style */
+.legend-hint {
+  font-size: 11px;
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+}
