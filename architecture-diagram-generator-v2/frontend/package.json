@@ -6,13 +6,12 @@
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",
-    "vite": "latest",
+    "axios": "latest",
+    "dagre": "^0.8.5",
+    "lucide-react": "latest",
     "react": "latest",
     "react-dom": "latest",
-    "reactflow": "latest",
-    "axios": "latest",
-    "dagre": "latest",
-    "lucide-react": "latest"
-  },
-  "devDependencies": {}
+    "reactflow": "^11.11.4",
+    "vite": "latest"
+  }
 }

@@ -6,3 +6,5 @@ pandas
 openpyxl
 requests
 networkx
+openai
+python-dotenv
