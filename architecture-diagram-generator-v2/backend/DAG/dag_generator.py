@@ -5,12 +5,13 @@ from collections import defaultdict
 logger = logging.getLogger(__name__)
 
 # Spatial Layout Constants for React Flow
-VERTICAL_SPACING = 160         # Y-axis distance between Purdue Layers
-HORIZONTAL_NODE_SPACING = 210  # X-axis distance between sibling nodes
-ZONE_PADDING = 60              # Internal padding for the Zone container
-MIN_ZONE_WIDTH = 400           # Minimum width for a zone container
-ZONE_MARGIN = 80               # Padding between different Zone containers
-NODE_HEIGHT = 100              # Approximate rendered height of an ICS node
+VERTICAL_SPACING = 260          # Y-axis distance between Purdue Layers
+HORIZONTAL_NODE_SPACING = 320  # X-axis distance between sibling nodes
+ZONE_PADDING = 100             # Internal padding for the Zone container
+MIN_ZONE_WIDTH = 520           # Minimum width for a zone container
+ZONE_MARGIN = 160              # Padding between different Zone containers
+NODE_HEIGHT = 110              # Approximate rendered height of an ICS node
+
 
 class ICSAnalysisDAGBuilder:
     """
@@ -76,11 +77,12 @@ class ICSAnalysisDAGBuilder:
         """Resolves topological cycles while preserving operational feedback loops for the UI."""
         while not nx.is_directed_acyclic_graph(self.dag_view):
             try:
-                cycle_edges = nx.find_cycle(self.dag_view, orientation='original')
+                cycle_edges = nx.find_cycle(self.dag_view)
                 weakest_edge = None
                 highest_removal_score = -float('inf')
                 
-                for u, v in cycle_edges:
+                for edge in cycle_edges:
+                    u, v = edge[0], edge[1]
                     edge_data = self.dag_view[u][v]
                     removal_score = self._score_edge_for_removal(u, v, edge_data)
                     
@@ -124,7 +126,7 @@ class ICSAnalysisDAGBuilder:
                         "id": f"macro_e_{u_zone}_{v_zone}",
                         "source": f"macro_{u_zone}",
                         "target": f"macro_{v_zone}",
-                        "animated": True
+                        "animated": False
                     })
                     seen_conduits.add(conduit_id)
 
@@ -179,11 +181,11 @@ class ICSAnalysisDAGBuilder:
         for zone_id in sorted(zone_layer_nodes.keys()):
             zone_x_anchors[zone_id] = current_zone_x_offset
             width = zone_bounds[zone_id]["computed_width"]
-            height = ((zone_bounds[zone_id]["max_layer"] - zone_bounds[zone_id]["min_layer"] + 1) * VERTICAL_SPACING)
+            height = ((zone_bounds[zone_id]["max_layer"] - zone_bounds[zone_id]["min_layer"]) * VERTICAL_SPACING) + (ZONE_PADDING * 2) + NODE_HEIGHT
             
             rf_nodes.append({
                 "id": f"group_{zone_id}",
-                "type": "group",
+                "type": "icsGroup",
                 "position": {"x": current_zone_x_offset, "y": (zone_bounds[zone_id]["min_layer"] * VERTICAL_SPACING) - ZONE_PADDING},
                 "data": { "label": zone_id.replace("_", " ").title() },
                 "style": { "width": width, "height": height }
@@ -235,7 +237,7 @@ class ICSAnalysisDAGBuilder:
                 "source": str(u),
                 "target": str(v),
                 "type": "smoothstep",
-                "animated": edge_attrs.get("edge_type") == "COMM_LINK" or in_attack_path,
+                "animated": False,
                 "data": {**edge_attrs, "in_attack_path": in_attack_path}
             })
 

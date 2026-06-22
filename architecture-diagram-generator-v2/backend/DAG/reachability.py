@@ -96,10 +96,30 @@ class AdvancedICSReachabilityEngine:
         
         critical_vectors = []
         
+        # Build communication-only subgraph containing only COMM_LINK edges (Problem 5)
+        comm_graph = nx.DiGraph()
+        for u, v, d in self.asset_graph.edges(data=True):
+            if d.get("edge_type") == "COMM_LINK":
+                comm_graph.add_edge(u, v)
+
         for entry in entries:
             for target in physical_targets:
                 if nx.has_path(self.asset_graph, entry, target):
                     path = nx.shortest_path(self.asset_graph, entry, target)
+                    
+                    # Verify communication reachability between adjacent cyber assets in the path
+                    is_reachable = True
+                    cyber_nodes = [n for n in path if self.asset_graph.nodes[n].get("node_category") == "CYBER_ASSET"]
+                    for idx in range(len(cyber_nodes) - 1):
+                        u_cyber = cyber_nodes[idx]
+                        v_cyber = cyber_nodes[idx+1]
+                        if u_cyber != v_cyber and not nx.has_path(comm_graph, u_cyber, v_cyber):
+                            is_reachable = False
+                            break
+                            
+                    if not is_reachable:
+                        continue
+                        
                     confidence = self._compute_path_confidence(path)
                     
                     critical_vectors.append({
@@ -129,43 +149,4 @@ class AdvancedICSReachabilityEngine:
                     zone_map[src_zone].add(dest_zone)
                     
         return {src: list(dests) for src, dests in zone_map.items()}
-
-    def get_prioritized_reachability(self, source_node, min_confidence=0.0):
-        """
-        Returns a sorted, categorized overview of all assets exposed 
-        from a source node, filtered by data confidence criteria.
-        """
-        if not self.asset_graph.has_node(source_node):
-            return []
-
-        cache_key = (source_node, min_confidence)
-        if cache_key in self._route_cache:
-            return self._route_cache[cache_key]
-
-        reachable_targets = nx.descendants(self.asset_graph, source_node)
-        prioritized_results = []
-
-        for target in reachable_targets:
-            path = nx.shortest_path(self.asset_graph, source_node, target)
-            confidence = self._compute_path_confidence(path)
-            
-            if confidence < min_confidence:
-                continue
-
-            severity = self._classify_severity(target)
-            explanation = self._generate_explanation(path)
-
-            prioritized_results.append({
-                "asset_id": target,
-                "severity": severity,
-                "confidence": confidence,
-                "path": path,
-                "explanation": explanation
-            })
-
-        # Sort criteria: Highest severity tier first, then by extraction confidence
-        severity_weight = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1}
-        prioritized_results.sort(key=lambda x: (severity_weight.get(x["severity"], 0), x["confidence"]), reverse=True)
-        
-        self._route_cache[cache_key] = prioritized_results
-        return prioritized_results
+

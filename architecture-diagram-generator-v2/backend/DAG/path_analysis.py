@@ -133,12 +133,37 @@ class ICSPathAnalyzer:
         """
         Discovers the top N highest-risk paths from entry points to targets.
         Includes execution time limits and depth limits to prevent exponential explosion.
+
+        Issue 6 fix: returns [] immediately if the graph has no edges (empty/disconnected
+        graph), preventing spurious single-node or zero-length paths.
         """
         entries = entry_points or self.ics_graph.entry_points
         critical_targets = targets or self.ics_graph.critical_assets
         analyzed_paths = []
-        
+
+        # --- Guard: empty graph ---
+        if self.asset_graph.number_of_edges() == 0:
+            logger.warning(
+                "analyze_attack_paths: graph has no edges — skipping path analysis. "
+                "Ensure RBAC permissions and architecture connections were parsed correctly."
+            )
+            return []
+
+        if not entries:
+            logger.warning("analyze_attack_paths: no entry points defined — skipping.")
+            return []
+
+        if not critical_targets:
+            logger.warning("analyze_attack_paths: no critical targets defined — skipping.")
+            return []
+
         start_time = time.time()
+
+        # Build communication-only subgraph containing only COMM_LINK edges (Problem 5)
+        comm_graph = nx.DiGraph()
+        for u, v, d in self.asset_graph.edges(data=True):
+            if d.get("edge_type") == "COMM_LINK":
+                comm_graph.add_edge(u, v)
 
         for entry in entries:
             for target in critical_targets:
@@ -159,9 +184,35 @@ class ICSPathAnalyzer:
                 try:
                     path_generator = nx.shortest_simple_paths(self.asset_graph, entry, target)
                     for raw_path in islice(path_generator, top_n):
+                        # Must be at least 2 nodes (1 edge) to be a valid attack path
+                        if len(raw_path) < 2:
+                            continue
                         if len(raw_path) - 1 > max_depth:
                             continue
                             
+                        # Must contain at least one network communication edge (COMM_LINK)
+                        # to represent realistic network movement/pivoting (Problem 5)
+                        has_comm = False
+                        for idx in range(len(raw_path) - 1):
+                            u_node, v_node = raw_path[idx], raw_path[idx+1]
+                            if self.asset_graph[u_node][v_node].get("edge_type") == "COMM_LINK":
+                                has_comm = True
+                                break
+                        if not has_comm:
+                            continue
+
+                        # Verify communication reachability between adjacent cyber assets in the path (Problem 5)
+                        is_reachable = True
+                        cyber_nodes = [n for n in raw_path if self.asset_graph.nodes[n].get("node_category") == "CYBER_ASSET"]
+                        for idx in range(len(cyber_nodes) - 1):
+                            u_cyber = cyber_nodes[idx]
+                            v_cyber = cyber_nodes[idx+1]
+                            if u_cyber != v_cyber and not nx.has_path(comm_graph, u_cyber, v_cyber):
+                                is_reachable = False
+                                break
+                        if not is_reachable:
+                            continue
+
                         enriched_path = self._evaluate_path(raw_path)
                         local_paths.append(enriched_path)
                 except nx.NetworkXNoPath:
@@ -219,8 +270,4 @@ class ICSPathAnalyzer:
         
         self._blast_radius_cache[compromised_node_id] = report
         return report
-
-# Backward compatibility functions
-def analyze_attack_paths(graph, entry_points, critical_assets):
-    analyzer = ICSPathAnalyzer(graph)
-    return analyzer.analyze_attack_paths(entry_points, critical_assets)
+

@@ -3,276 +3,482 @@ import json
 import os
 import re
 from pathlib import Path
-from PIL import Image
+from typing import Any, Dict, Optional
 
+from PIL import Image
 from dotenv import load_dotenv
 from openai import OpenAI
 
 # Load .env from the backend directory
 load_dotenv(dotenv_path=Path(__file__).parent.parent / ".env")
 
-# Initialize OpenAI client (reads OPENAI_API_KEY from .env automatically)
+# Initialize OpenAI client
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# Model to use – GPT-4.1 supports vision natively via the Chat Completions API
+# Model to use
 VISION_MODEL = os.getenv("OPENAI_VISION_MODEL", "gpt-4.1")
 
 
-def preprocess_image(image_path):
+def preprocess_image(image_path: str) -> str:
     """
-    Resizes the image to a maximum width of 1500px to reduce token cost
-    while keeping enough detail for GPT-4.1 to read labels accurately.
-    GPT-4.1 supports high-detail vision natively, so we do NOT need EasyOCR.
+    Resize image to a max width of 1500px to reduce token cost while keeping
+    enough detail for GPT-4.1 to read labels.
     """
     img = Image.open(image_path).convert("RGB")
     max_width = 1500
+
     if img.width > max_width:
         ratio = max_width / img.width
         new_height = int(img.height * ratio)
         img = img.resize((max_width, new_height), Image.LANCZOS)
+
     new_path = str(Path(image_path).with_name("preprocessed_" + Path(image_path).name))
     img.save(new_path, format="JPEG", quality=92)
     return new_path
 
 
-def extract_json(text):
-    """Robustly extracts the first valid JSON object from a model response."""
+def extract_json(text: str) -> Optional[Dict[str, Any]]:
+    """Robustly extract JSON from model output."""
+    if not text:
+        return None
+
+    cleaned = text.strip()
+    cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s*```$", "", cleaned)
+
     try:
-        return json.loads(text)
+        parsed = json.loads(cleaned)
+        if isinstance(parsed, dict):
+            return parsed
     except Exception:
         pass
-    match = re.search(r"\{[\s\S]*\}", text)
-    if match:
+
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        candidate = cleaned[start : end + 1]
         try:
-            return json.loads(match.group(0))
+            parsed = json.loads(candidate)
+            if isinstance(parsed, dict):
+                return parsed
         except Exception:
             pass
+
+    match = re.search(r"\{[\s\S]*\}", cleaned)
+    if match:
+        try:
+            parsed = json.loads(match.group(0))
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+
     return None
 
 
-def transform_to_dag(graph_data):
+def slugify(value: Any, prefix: str = "x") -> str:
+    value = str(value or "").strip().lower()
+    value = re.sub(r"[^a-z0-9]+", "_", value)
+    value = re.sub(r"_+", "_", value).strip("_")
+    return value or prefix
+
+
+def safe_list(value: Any):
+    return value if isinstance(value, list) else []
+
+
+def confidence_value(x: Any, default: float = 0.75) -> float:
+    try:
+        v = float(x)
+        if 0.0 <= v <= 1.0:
+            return v
+    except Exception:
+        pass
+    return default
+
+
+def normalize_action(action: Any) -> str:
+    raw = slugify(action)
+    mapping = {
+        "monitor": "monitor",
+        "read": "read",
+        "write": "write",
+        "configure": "configure",
+        "control": "control",
+        "administer": "administer",
+        "execute": "execute",
+        "maintain": "maintain",
+        "observe": "observe",
+    }
+    return mapping.get(raw, raw or "read")
+
+
+def build_authorization_prompt() -> str:
+    return """
+You are an expert ICS/OT architecture extractor for ISA/IEC 62443 security analysis.
+
+Your ONLY task is to extract ZONES, OBJECTS, and raw COMMUNICATION LINKS from the
+provided architecture diagram image.
+
+=== CRITICAL RULES — VIOLATIONS WILL BREAK THE SECURITY MODEL ===
+
+1. DO NOT extract, guess, or invent any subjects (roles, users, operators).
+   Subjects such as VendorMaint, OEMOps, WFTech, NetAdmin come from a separate
+   RBAC policy file and will be injected by a dedicated parser. You must leave
+   S = [] (empty list) in your output.
+
+2. DO NOT extract, guess, or invent any permissions or authorization rules.
+   Permissions come from the RBAC policy file only. You must leave
+   E.permissions = [] (empty list) in your output.
+
+3. DO NOT generate MITRE ATT&CK technique IDs.
+4. DO NOT generate attack paths or risk scores.
+5. DO NOT invent information not visible in the diagram.
+
+=== WHAT YOU MUST EXTRACT ===
+
+Z (Zones): All security zones, network segments, or trust boundaries visible in the
+  diagram. Examples: Vendor Control Room, Wind Farm Control Room, OEM Domain,
+  Turbine Local Control, External Transit, DMZ, Enterprise Zone.
+
+O (Objects): ALL physical and logical assets visible in the diagram. These are the
+  PROTECTED OBJECTS that RBAC permissions will reference. Include:
+  - PLCs, HMIs, SCADA servers, historians, engineering workstations
+  - Firewalls, VPN gateways, routers, switches (mark is_enforcement_point=true)
+  - Sensors, actuators, field devices
+  - Servers, databases, cloud endpoints
+  Assign each object to its visible zone and estimate its Purdue level.
+
+E.connections: Raw communication links VISIBLE in the diagram between objects or
+  zones. Do NOT filter by firewall rules — include all visual connections.
+
+=== PROTOCOL INFERENCE — VERY IMPORTANT ===
+You MUST infer the protocol from context. Do NOT use "unknown" if context exists.
+Use these rules:
+- VPN gateway or VPN tunnel label → "vpn" or "ipsec"
+- OPC-UA label or OPC server → "opc-ua"
+- Modbus label or PLC↔sensor link → "modbus"
+- DNP3 label or RTU communication → "dnp3"
+- EtherNet/IP label or industrial Ethernet → "ethernetip"
+- IEC 104 / IEC 60870 label → "iec104"
+- RDP label or remote desktop → "rdp"
+- SSH label → "ssh"
+- HTTP/HTTPS label or web → "https"
+- PCN (Process Control Network) links → "pcn"
+- HMI ↔ PLC link without explicit label → "modbus" (most common)
+- HMI ↔ SCADA link → "opc-ua"
+- Firewall ↔ firewall or cross-zone link → "tcp-ip"
+- SCADA ↔ historian → "opc-da"
+- Control room to field device without label → "industrial-ethernet"
+- If a link is simply a network connection with no clues → "tcp-ip"
+Only use "unknown" if there is absolutely no contextual information whatsoever.
+
+=== CRITICALITY INFERENCE RULES ===
+- PLC, RTU, safety controller → "critical"
+- Sensor, actuator, physical device → "critical"
+- SCADA server, master HMI → "critical"
+- Firewall, VPN gateway → "high"
+- Historian, engineering workstation → "high"
+- HMI (non-master), server → "medium"
+- Monitoring-only devices → "low"
+
+=== IS_ENFORCEMENT_POINT RULES ===
+Set is_enforcement_point=true for: firewalls, VPN gateways, security gateways,
+unidirectional gateways, data diodes, proxy servers, DMZ servers.
+
+=== OUTPUT JSON SCHEMA (strict) ===
+{
+  "Z": [
+    { "id": "zone_id_snake_case", "name": "Human Readable Zone Name" }
+  ],
+  "S": [],
+  "O": [
+    {
+      "id": "object_id_snake_case",
+      "name": "Object Name",
+      "type": "plc|hmi|scada|historian|workstation|server|sensor|actuator|firewall|vpn|gateway|unknown",
+      "zone": "zone_id_or_null",
+      "purdue_level": "Level 0|Level 1|Level 2|Level 3|Level 4|Level 5|unknown",
+      "criticality": "critical|high|medium|low",
+      "is_enforcement_point": true_or_false
+    }
+  ],
+  "R": [],
+  "E": {
+    "permissions": [],
+    "connections": [
+      {
+        "source": "source_object_id",
+        "target": "target_object_id",
+        "protocol": "inferred_protocol_name"
+      }
+    ]
+  }
+}
+
+Constraints:
+- All IDs must be lowercase snake_case.
+- Return ONLY valid JSON. No markdown fences, no explanations.
+- If you are unsure of a zone, use null for the zone field.
+- NEVER use "unknown" for protocol if you can infer it from topology or labels.
+"""
+
+
+def transform_to_aasg(graph_data: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Converts the Phase 1 ICS JSON into a flat DAG format.
-    Captures deep semantics: nested zones, purdue levels, physical processes,
-    trust boundaries, and conduits.
+    Convert architecture extractor output {Z, O, E.connections} into a flat
+    node/edge list for downstream compatibility.  Subjects and permissions are
+    NOT included here — they are injected by the UnifiedModel merger later.
     """
     nodes = []
     edges = []
     valid_node_ids = set()
 
     if not graph_data:
-        return {"nodes": [], "edges": []}
+        return {"nodes": [], "edges": [], "derived_paths": []}
 
-    # 1. Map Zones to Nodes (Supporting Nesting)
-    for i, zone in enumerate(graph_data.get("zones", [])):
-        z_id = str(zone.get("id", f"zone_{i}"))
-        nodes.append({
-            "id": z_id,
-            "label": zone.get("name", "Unknown Zone"),
-            "type": "zone",
-            "parent_zone": zone.get("parent_zone", None)
-        })
-        valid_node_ids.add(z_id)
+    def add_node(node_id: str, label: str, node_type: str, data: Dict[str, Any]):
+        if not node_id or node_id in valid_node_ids:
+            return
+        nodes.append(
+            {
+                "id": node_id,
+                "label": label,
+                "type": node_type,
+                "data": data,
+            }
+        )
+        valid_node_ids.add(node_id)
 
-    # 2. Map Assets to Nodes (with Criticality & Purdue Level)
-    for i, asset in enumerate(graph_data.get("assets", [])):
-        n_id = str(asset.get("id", f"asset_{i}"))
-        nodes.append({
-            "id": n_id,
-            "label": asset.get("name", "Unknown Asset"),
-            "type": asset.get("type", "device"),
-            "zone": asset.get("zone", "unknown"),
-            "criticality": asset.get("criticality", "medium"),
-            "purdue_level": asset.get("purdue_level", "unknown"),
-            "is_enforcement_point": asset.get("is_enforcement_point", False)
-        })
-        valid_node_ids.add(n_id)
-
-    # 3. Map Roles / Human Actors to Nodes
-    for i, role in enumerate(graph_data.get("roles", [])):
-        n_id = str(role.get("id", f"role_{i}"))
-        nodes.append({
-            "id": n_id,
-            "label": role.get("name", "Unknown Role"),
-            "type": "user"
-        })
-        valid_node_ids.add(n_id)
-
-    # Helper: safely append an edge and inject missing endpoint nodes
-    def add_edge_safely(edge_id, source, target, label, edge_type="default"):
+    def add_edge(edge_id: str, source: str, target: str, label: str, edge_type: str, data: Dict[str, Any]):
         if not source or not target or source == "None" or target == "None":
             return
         if source not in valid_node_ids:
-            nodes.append({"id": source, "label": source.replace("_", " ").title(), "type": "inferred_node"})
-            valid_node_ids.add(source)
+            add_node(source, source.replace("_", " ").title(), "inferred_node", {"kind": "inferred"})
         if target not in valid_node_ids:
-            nodes.append({"id": target, "label": target.replace("_", " ").title(), "type": "inferred_node"})
-            valid_node_ids.add(target)
-        edges.append({"id": edge_id, "source": source, "target": target, "label": label, "edge_type": edge_type})
+            add_node(target, target.replace("_", " ").title(), "inferred_node", {"kind": "inferred"})
+        edges.append(
+            {
+                "id": edge_id,
+                "source": source,
+                "target": target,
+                "label": label,
+                "edge_type": edge_type,
+                "data": data,
+            }
+        )
 
-    # 4. Network Communications (asset-to-asset links)
-    for i, comm in enumerate(graph_data.get("communications", [])):
-        add_edge_safely(f"comm_{i}", str(comm.get("source")), str(comm.get("target")),
-                        comm.get("protocol") or "network_traffic", "communication")
+    # Zones (Z)
+    for i, zone in enumerate(safe_list(graph_data.get("Z"))):
+        zid = str(zone.get("id") or f"zone_{i}")
+        add_node(
+            zid,
+            zone.get("name", zid.replace("_", " ").title()),
+            "zone",
+            {
+                "kind": "zone",
+                "parent_zone": zone.get("parent_zone"),
+            },
+        )
 
-    # 5. Conduits (zone-to-zone links)
-    for i, conduit in enumerate(graph_data.get("conduits", [])):
-        add_edge_safely(f"cond_{i}", str(conduit.get("source_zone")), str(conduit.get("target_zone")),
-                        conduit.get("channel", "conduit"), "conduit")
+    # Subjects (S) — should be empty from image parser; populated by RBAC parser
+    for i, subject in enumerate(safe_list(graph_data.get("S"))):
+        sid = str(subject.get("id") or f"subject_{i}")
+        add_node(
+            sid,
+            subject.get("name", sid.replace("_", " ").title()),
+            "user",
+            {
+                "kind": "subject",
+                "zone": "external_transit",
+            },
+        )
 
-    # 6. Human → Asset Permissions
-    for i, perm in enumerate(graph_data.get("permissions", [])):
-        add_edge_safely(f"perm_{i}", str(perm.get("subject")), str(perm.get("object")),
-                        perm.get("action") or "interact", "permission")
+    # Objects (O)
+    for i, obj in enumerate(safe_list(graph_data.get("O"))):
+        oid = str(obj.get("id") or f"object_{i}")
+        o_type = obj.get("type", "component")
+        add_node(
+            oid,
+            obj.get("name", oid.replace("_", " ").title()),
+            o_type,
+            {
+                "kind": "object",
+                "object_type": o_type,
+                "zone": obj.get("zone"),
+                "purdue_level": obj.get("purdue_level", "unknown"),
+                "criticality": obj.get("criticality", "medium"),
+                "is_enforcement_point": obj.get("is_enforcement_point", False),
+            },
+        )
 
-    # 7. Cyber → Physical dependencies (control chains)
-    for i, phys in enumerate(graph_data.get("physical_dependencies", [])):
-        add_edge_safely(f"phys_{i}", str(phys.get("cyber_asset")), str(phys.get("physical_process")),
-                        phys.get("relationship", "controls"), "cyber_physical")
+    e_data = graph_data.get("E", {})
+    if not isinstance(e_data, dict):
+        e_data = {}
 
-    return {"nodes": nodes, "edges": edges}
+    # Connections (E.connections)
+    for i, conn in enumerate(safe_list(e_data.get("connections"))):
+        src = conn.get("source")
+        tgt = conn.get("target")
+        proto = conn.get("protocol", "tcp-ip") or "tcp-ip"
+        add_edge(
+            f"comm_{i}",
+            src,
+            tgt,
+            proto,
+            "COMM_LINK",
+            {"protocol": proto}
+        )
+
+    # Permissions (E.permissions) — should be empty from image parser
+    for i, perm in enumerate(safe_list(e_data.get("permissions"))):
+        sub = perm.get("subject")
+        obj = perm.get("object")
+        act = perm.get("action", "access")
+        add_edge(
+            f"perm_{i}",
+            sub,
+            obj,
+            act,
+            "HUMAN_PERM",
+            {"action": act}
+        )
+
+    return {"nodes": nodes, "edges": edges, "derived_paths": []}
 
 
-def image_to_graph(image_path):
+def _print_graph_summary(graph: Dict[str, Any]) -> None:
+    """Print a small summary of what the model returned."""
+    def n(x):
+        return len(x) if isinstance(x, list) else 0
+
+    e_data = graph.get("E", {})
+    if not isinstance(e_data, dict):
+        e_data = {}
+
+    conns = e_data.get("connections", [])
+    unknown_proto = sum(1 for c in conns if c.get("protocol", "unknown") in ("unknown", ""))
+
+    print("\n[LLM OUTPUT SUMMARY]", flush=True)
+    print(f"  Zones (Z): {n(graph.get('Z'))}", flush=True)
+    print(f"  Subjects (S): {n(graph.get('S'))}", flush=True)
+    print(f"  Objects (O): {n(graph.get('O'))}", flush=True)
+    print(f"  Actions (R): {n(graph.get('R'))}", flush=True)
+    print(f"  Permissions (E.permissions): {n(e_data.get('permissions'))}", flush=True)
+    print(f"  Connections (E.connections): {n(conns)}", flush=True)
+    if unknown_proto > 0:
+        print(f"  WARNING: {unknown_proto}/{n(conns)} connections have unknown protocol", flush=True)
+    else:
+        print(f"  Protocol quality: All connections have named protocols ✓", flush=True)
+    print(flush=True)
+
+
+def image_to_graph(image_path: str, rbac_content: str = "", firewall_content: str = ""):
     """
-    Main entry point: preprocess image → call GPT-4.1 vision API → parse JSON → DAG.
-    No EasyOCR needed – GPT-4.1 reads text labels from the image natively.
+    Main entry point:
+    preprocess image -> GPT-4.1 vision -> parse authorization JSON -> build AASG graph.
     """
     try:
-        # Step 1: Resize image for cost efficiency
-        processed_path = preprocess_image(image_path)
+        print(f"[image_to_graph] Starting extraction for: {image_path}", flush=True)
 
-        # Step 2: Base64-encode the preprocessed image
+        if not Path(image_path).exists():
+            raise FileNotFoundError(f"Image not found: {image_path}")
+
+        processed_path = preprocess_image(image_path)
+        print(f"[image_to_graph] Preprocessed image saved at: {processed_path}", flush=True)
+
         with open(processed_path, "rb") as img_file:
             encoded_image = base64.b64encode(img_file.read()).decode("utf-8")
 
-        # Step 3: Build the expert ICS extraction prompt
-        prompt = """You are an Expert Industrial Control System (ICS) Security Architect.
-Analyse the attached architecture diagram and reconstruct a complete, highly detailed
-Cyber-Physical Threat Model in JSON.
+        print(f"[image_to_graph] Base64 image length: {len(encoded_image)}", flush=True)
+        print("[image_to_graph] Calling OpenAI model...", flush=True)
 
-=== EXTRACTION MANDATES ===
+        prompt = build_authorization_prompt()
+        if rbac_content:
+            prompt += f"\n\n### RBAC Policy File:\n{rbac_content}"
+        if firewall_content:
+            prompt += f"\n\n### Firewall Rules File:\n{firewall_content}"
 
-1. CONTROL HIERARCHY & PURDUE MODEL:
-   Assign a purdue_level to EVERY asset:
-     Level 5 / Level 4 – Enterprise / Business WAN
-     Level 3            – SCADA Servers, Historians
-     Level 2            – HMIs, Engineering Workstations
-     Level 1            – PLCs, RTUs, Safety Controllers
-     Level 0            – I/O Modules, Sensors, Actuators
-   Do NOT collapse separate devices into one node.
-
-2. ASSET CRITICALITY:
-   PLCs, RTUs, Safety Controllers, Sensors → "critical"
-   HMIs, SCADA Servers                    → "high"
-   Workstations, Historians               → "medium"
-   Firewalls (from OT perspective)        → "low"
-
-3. ZONE NESTING & TRUST BOUNDARIES:
-   Every asset must belong to a zone (use the zone id string).
-   Use parent_zone for nested zones.
-   Populate trust_boundaries: list every firewall/VPN and which two
-   zones it separates.
-
-4. SEPARATE HUMANS FROM NETWORKS:
-   Humans/Roles are NEVER network endpoints.
-   Communications are strictly asset-to-asset.
-   Humans connect only via the permissions array.
-
-5. GRANULAR PERMISSIONS:
-   Use only: "monitor", "read", "configure", "control", "administer".
-
-6. PROTOCOLS & PHYSICAL DEPENDENCIES:
-   Infer protocols where visible (Modbus, OPC-UA, VPN, TCP/IP, etc.).
-   physical_dependencies must list every PLC/RTU → physical process link.
-
-Required JSON structure (return ONLY this JSON, no markdown, no commentary):
-{
-  "zones": [
-    {"id": "zone_id", "name": "Zone Display Name", "parent_zone": null}
-  ],
-  "trust_boundaries": [
-    {"id": "tb_1", "enforcement_point": "asset_id", "separates": ["zone_a", "zone_b"]}
-  ],
-  "roles": [
-    {"id": "vendor_operator", "name": "Vendor Operator"}
-  ],
-  "assets": [
-    {"id": "master_hmi", "name": "Master HMI", "type": "hmi",
-     "zone": "turbine_local_control", "criticality": "high",
-     "purdue_level": "Level 2", "is_enforcement_point": false}
-  ],
-  "communications": [
-    {"source": "asset_id_a", "target": "asset_id_b", "protocol": "Modbus"}
-  ],
-  "conduits": [
-    {"id": "vpn_1", "source_zone": "zone_a", "target_zone": "zone_b", "channel": "VPN"}
-  ],
-  "permissions": [
-    {"subject": "vendor_operator", "object": "master_hmi", "action": "control"}
-  ],
-  "physical_dependencies": [
-    {"cyber_asset": "turbine_plc", "physical_process": "wind_turbine_generator",
-     "relationship": "controls_physics"}
-  ]
-}
-
-CRITICAL: Every ID used as source, target, subject, object, cyber_asset, zone,
-or enforcement_point MUST be defined in the main arrays first.
-Extract ALL components visible in the diagram. Do not truncate.
-Return ONLY valid JSON."""
-
-        # Step 4: Call GPT-4.1 Chat Completions with vision
         response = client.chat.completions.create(
             model=VISION_MODEL,
-            response_format={"type": "json_object"},   # Enforces strict JSON output
+            response_format={"type": "json_object"},
             messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You extract authorization models from ICS/OT architecture diagrams. "
+                        "Be conservative, precise, infer protocols from topology context, "
+                        "and output only valid JSON."
+                    ),
+                },
                 {
                     "role": "user",
                     "content": [
-                        {
-                            "type": "text",
-                            "text": prompt
-                        },
+                        {"type": "text", "text": prompt},
                         {
                             "type": "image_url",
                             "image_url": {
                                 "url": f"data:image/jpeg;base64,{encoded_image}",
-                                "detail": "high"   # Uses high-res tiling for small labels
-                            }
-                        }
-                    ]
-                }
+                                "detail": "high",
+                            },
+                        },
+                    ],
+                },
             ],
             temperature=0.1,
-            max_tokens=4096
+            max_tokens=4096,
         )
 
-        # Step 5: Parse the response JSON
-        raw_text = response.choices[0].message.content
+        raw_text = response.choices[0].message.content or ""
+
+        print("\n[LLM RAW RESPONSE START]\n", flush=True)
+        print(raw_text[:4000], flush=True)
+        if len(raw_text) > 4000:
+            print("\n... [TRUNCATED RAW RESPONSE] ...\n", flush=True)
+        print("[LLM RAW RESPONSE END]\n", flush=True)
+
         graph = extract_json(raw_text)
 
-        if graph:
-            dag_data = transform_to_dag(graph)
+        if not graph:
+            print("[image_to_graph] ERROR: Could not parse JSON.", flush=True)
             return {
-                "ocr_text": "Extracted via GPT-4.1 native vision (no separate OCR required)",
-                "nodes": dag_data["nodes"],
-                "edges": dag_data["edges"],
-                "raw_model_data": graph,
-                "model_used": VISION_MODEL,
-                "tokens_used": {
-                    "prompt": response.usage.prompt_tokens,
-                    "completion": response.usage.completion_tokens,
-                    "total": response.usage.total_tokens
-                }
+                "ocr_text": raw_text,
+                "nodes": [],
+                "edges": [],
+                "error": "Model did not return valid JSON.",
             }
 
+        print("[image_to_graph] JSON parsed successfully.", flush=True)
+        _print_graph_summary(graph)
+
+        aasg_data = transform_to_aasg(graph)
+
+        usage = getattr(response, "usage", None)
+        tokens_used = {
+            "prompt": getattr(usage, "prompt_tokens", None) if usage else None,
+            "completion": getattr(usage, "completion_tokens", None) if usage else None,
+            "total": getattr(usage, "total_tokens", None) if usage else None,
+        }
+
+        print(
+            f"[image_to_graph] Built graph with {len(aasg_data['nodes'])} nodes and {len(aasg_data['edges'])} edges.",
+            flush=True,
+        )
+
         return {
-            "ocr_text": raw_text,
-            "nodes": [],
-            "edges": [],
-            "error": "GPT-4.1 did not return valid JSON. Raw response stored in ocr_text."
+            "ocr_text": "Extracted via GPT-4.1 native vision",
+            "nodes": aasg_data["nodes"],
+            "edges": aasg_data["edges"],
+            "derived_paths": aasg_data["derived_paths"],
+            "raw_model_data": graph,
+            "model_used": VISION_MODEL,
+            "tokens_used": tokens_used,
         }
 
     except Exception as e:
-        return {"nodes": [], "edges": [], "error": f"OpenAI API Error: {str(e)}"}
+        print(f"[image_to_graph] OpenAI API Error: {str(e)}", flush=True)
+        return {
+            "nodes": [],
+            "edges": [],
+            "error": f"OpenAI API Error: {str(e)}",
+        }
