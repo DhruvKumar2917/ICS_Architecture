@@ -26,6 +26,7 @@ cd backend
 python -m venv venv
 source venv/Scripts/activate
 pip install -r requirements.txt
+.\venv\Scripts\Activate.ps1
   uvicorn main:app --reload --port 8000
 ```
 
