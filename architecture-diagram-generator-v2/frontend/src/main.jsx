@@ -1,637 +1,620 @@
 import React, { useCallback, useState, useEffect, memo } from "react";
 import { createRoot } from "react-dom/client";
 import ReactFlow, {
-  Background,
-  Controls,
-  MiniMap,
-  Panel,
-  addEdge,
-  useNodesState,
-  useEdgesState,
-  MarkerType,
-  Handle,
-  Position,
-  ReactFlowProvider,
-  useViewport,
-  useReactFlow
+  Background, BackgroundVariant, Controls, MiniMap,
+  addEdge, useNodesState, useEdgesState,
+  MarkerType, Handle, Position, ReactFlowProvider,
 } from "reactflow";
 import "reactflow/dist/style.css";
 import axios from "axios";
 import dagre from "dagre";
 import {
-  Upload,
-  FileText,
-  Network,
-  AlertTriangle,
-  Shield,
-  ShieldAlert,
-  Cpu,
-  Terminal,
-  Zap,
-  Compass,
-  RefreshCw,
-  Target
+  Shield, Upload, FileText, AlertTriangle, ShieldAlert,
+  Cpu, Compass, RefreshCw, Zap, Terminal, Lock,
+  Network, UserCheck, GitBranch, Activity, Eye,
+  CheckCircle, XCircle, ChevronRight, Database,
 } from "lucide-react";
 import "./style.css";
 
 const API_URL = "http://127.0.0.1:8000";
 
-// Color maps for node categories
+// ---------------------------------------------------------------------------
+// Type → minimap colour
+// ---------------------------------------------------------------------------
 const typeColors = {
-  firewall: "#ffe4e6",
-  server: "#dbeafe",
-  database: "#dcfce7",
-  vpn: "#ede9fe",
-  cloud: "#fef9c3",
-  plc: "#ffedd5",
-  scada: "#e0f2fe",
-  network: "#f3f4f6",
-  zone: "#f5f5f4",
-  component: "#ffffff",
-  user: "#fae8ff"
+  firewall: "#ffe4e6", server: "#dbeafe", database: "#dcfce7",
+  vpn: "#ede9fe", plc: "#ffedd5", scada: "#e0f2fe",
+  zone: "#f5f5f4", user: "#fae8ff", subject: "#f3e8ff",
+  object: "#ecfeff", component: "#ffffff",
 };
 
-// Custom Node component for ICS Assets
+// ---------------------------------------------------------------------------
+// Custom ICS Node
+// ---------------------------------------------------------------------------
 const ICSNode = memo(({ data }) => {
-  const criticality = data.criticality || "medium";
-  const purdueLevel = data.purdue_level || "unknown";
-  const type = data.type || "component";
-  const inAttackPath = data.in_attack_path;
-  const isEnforcement = data.is_enforcement_point;
-  const isExposedBlast = data.is_exposed_blast;
-  const isCompromisedSource = data.is_compromised_source;
+  const criticality      = data.criticality || "medium";
+  const purdueLevel      = data.purdue_level || "";
+  const type             = data.type || "component";
+  const inAttackPath     = data.in_attack_path;
+  const isEnforcement    = data.is_enforcement_point;
+  const isExposedBlast   = data.is_exposed_blast;
+  const isCompromised    = data.is_compromised_source;
 
-  let critBorderColor = "#94a3b8";
-  if (criticality === "critical") critBorderColor = "#ef4444";
-  else if (criticality === "high") critBorderColor = "#f97316";
-  else if (criticality === "medium") critBorderColor = "#eab308";
+  let borderColor = "#334155";
+  if (isCompromised)    borderColor = "#a855f7";
+  else if (inAttackPath) borderColor = "#ef4444";
+  else if (isExposedBlast) borderColor = "#f97316";
+  else if (criticality === "critical") borderColor = "#ef4444";
+  else if (criticality === "high")     borderColor = "#f97316";
+  else if (criticality === "medium")   borderColor = "#eab308";
 
-  const customStyle = {
-    borderColor: isCompromisedSource 
-      ? "#a855f7" 
-      : inAttackPath 
-      ? "#ef4444" 
-      : isExposedBlast 
-      ? "#f97316" 
-      : critBorderColor,
-    boxShadow: isCompromisedSource
-      ? "0 0 20px rgba(168, 85, 247, 0.8)"
-      : inAttackPath 
-      ? "0 0 20px rgba(239, 68, 68, 0.8)" 
-      : isExposedBlast 
-      ? "0 0 20px rgba(249, 115, 22, 0.7)" 
-      : "none",
-    borderWidth: inAttackPath || isExposedBlast || isCompromisedSource ? "3px" : "1.5px"
-  };
+  const glow = isCompromised
+    ? "0 0 22px rgba(168,85,247,0.8)"
+    : inAttackPath
+    ? "0 0 22px rgba(239,68,68,0.8)"
+    : isExposedBlast
+    ? "0 0 20px rgba(249,115,22,0.7)"
+    : "none";
 
   return (
-    <div className={`ics-node ${inAttackPath ? "pulse-red" : ""}`} style={customStyle}>
+    <div
+      className={`ics-node ${inAttackPath ? "pulse-red" : ""}`}
+      style={{ borderColor, boxShadow: glow, borderWidth: (inAttackPath || isExposedBlast || isCompromised) ? "2px" : "1.5px" }}
+    >
       <Handle type="target" position={Position.Top} className="node-handle" />
-      
+
       <div className="ics-node-header">
         <span className="ics-node-type">{type.toUpperCase()}</span>
-        {purdueLevel !== "unknown" && (
+        {purdueLevel && purdueLevel !== "unknown" && (
           <span className="ics-node-purdue">{purdueLevel}</span>
         )}
       </div>
 
-      <div className="ics-node-body">
-        <div className="ics-node-name">{data.label || "Asset"}</div>
-      </div>
+      <div className="ics-node-name">{data.label || "Asset"}</div>
 
       <div className="ics-node-footer">
-        {criticality === "critical" && (
-          <span className="badge badge-critical">CRITICAL</span>
-        )}
-        {isEnforcement && (
-          <span className="badge badge-enforcement">SECURE</span>
-        )}
-        {isCompromisedSource && (
-          <span className="badge badge-compromised">COMPROMISED</span>
-        )}
-        {isExposedBlast && !isCompromisedSource && (
-          <span className="badge badge-exposed">EXPOSED</span>
-        )}
+        {criticality === "critical" && <span className="badge badge-critical">CRITICAL</span>}
+        {isEnforcement    && <span className="badge badge-enforce">SECURE</span>}
+        {isCompromised    && <span className="badge badge-subject">COMPROMISED</span>}
+        {isExposedBlast && !isCompromised && <span className="badge badge-exposed">EXPOSED</span>}
+        <button
+          className="blast-btn"
+          onClick={(e) => { e.stopPropagation(); data.onBlastRadius?.(data.id); }}
+          title="Analyze compromise impact"
+        >
+          <Zap size={8} /> Impact
+        </button>
       </div>
-
-      <button 
-        className="blast-btn" 
-        onClick={(e) => {
-          e.stopPropagation();
-          if (data.onBlastRadius) data.onBlastRadius(data.id);
-        }}
-        title="Analyze compromise impact"
-      >
-        <Zap size={10} style={{ marginRight: 2 }} /> Impact
-      </button>
 
       <Handle type="source" position={Position.Bottom} className="node-handle" />
     </div>
   );
 });
 
-const nodeTypes = {
-  icsNode: ICSNode
-};
+const ICSZoneGroup = memo(({ data, id }) => (
+  <div className="ics-zone-group">
+    <div className="ics-zone-header">
+      {data.label || id.replace("group_", "").replace(/_/g, " ").toUpperCase()}
+    </div>
+  </div>
+));
 
-// Custom interactive scrollbar component for ReactFlow viewport
-const CustomScrollbars = () => {
-  const { x, y, zoom } = useViewport();
-  const { setViewport, getNodes } = useReactFlow();
-  const [containerSize, setContainerSize] = useState({ width: 800, height: 600 });
-  const [isDraggingH, setIsDraggingH] = useState(false);
-  const [isDraggingV, setIsDraggingV] = useState(false);
+const nodeTypes = { icsNode: ICSNode, icsGroup: ICSZoneGroup };
 
-  useEffect(() => {
-    const handleResize = () => {
-      const rfEl = document.querySelector(".react-flow");
-      if (rfEl) {
-        setContainerSize({
-          width: rfEl.clientWidth,
-          height: rfEl.clientHeight
-        });
-      }
-    };
-    const timer = setTimeout(handleResize, 200);
-    window.addEventListener("resize", handleResize);
-    return () => {
-      clearTimeout(timer);
-      window.removeEventListener("resize", handleResize);
-    };
-  }, []);
-
-  const nodes = getNodes();
-  if (nodes.length === 0) return null;
-
-  let minX = Infinity;
-  let maxX = -Infinity;
-  let minY = Infinity;
-  let maxY = -Infinity;
-
-  nodes.forEach((node) => {
-    if (!node.parentNode) {
-      const nx = node.position.x;
-      const ny = node.position.y;
-      let w = 180;
-      let h = 80;
-      if (node.style) {
-        if (typeof node.style.width === 'number') w = node.style.width;
-        else if (typeof node.style.width === 'string') w = parseInt(node.style.width, 10) || 180;
-
-        if (typeof node.style.height === 'number') h = node.style.height;
-        else if (typeof node.style.height === 'string') h = parseInt(node.style.height, 10) || 80;
-      }
-      if (nx < minX) minX = nx;
-      if (nx + w > maxX) maxX = nx + w;
-      if (ny < minY) minY = ny;
-      if (ny + h > maxY) maxY = ny + h;
-    }
-  });
-
-  if (minX === Infinity) return null;
-
-  const margin = 100;
-  const W_total = (maxX - minX) + 2 * margin;
-  const H_total = (maxY - minY) + 2 * margin;
-  const total_minX = minX - margin;
-  const total_minY = minY - margin;
-
-  const W_visible = containerSize.width / zoom;
-  const H_visible = containerSize.height / zoom;
-
-  const showH = W_total > W_visible;
-  const showV = H_total > H_visible;
-
-  if (!showH && !showV) return null;
-
-  const trackMargin = 20;
-  const scrollbarThickness = 8;
-  const S_width = containerSize.width - 2 * trackMargin - (showV ? 20 : 0);
-  const thumbWidth = Math.max(40, S_width * Math.min(1, W_visible / W_total));
-  const X_scroll = (-x / zoom) - total_minX;
-  const scrollFractionX = Math.max(0, Math.min(1, X_scroll / (W_total - W_visible)));
-  const thumbLeft = (S_width - thumbWidth) * scrollFractionX;
-
-  const S_height = containerSize.height - 2 * trackMargin - (showH ? 20 : 0);
-  const thumbHeight = Math.max(40, S_height * Math.min(1, H_visible / H_total));
-  const Y_scroll = (-y / zoom) - total_minY;
-  const scrollFractionY = Math.max(0, Math.min(1, Y_scroll / (H_total - H_visible)));
-  const thumbTop = (S_height - thumbHeight) * scrollFractionY;
-
-  const handleMouseDownH = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDraggingH(true);
-    const startClientX = e.clientX;
-    const startThumbLeft = thumbLeft;
-
-    const handleMouseMove = (moveEvent) => {
-      const deltaX = moveEvent.clientX - startClientX;
-      let newThumbLeft = startThumbLeft + deltaX;
-      newThumbLeft = Math.max(0, Math.min(S_width - thumbWidth, newThumbLeft));
-      const newFractionX = newThumbLeft / (S_width - thumbWidth);
-      const newXScroll = newFractionX * (W_total - W_visible);
-      const newX = -(newXScroll + total_minX) * zoom;
-      setViewport({ x: newX, y, zoom });
-    };
-
-    const handleMouseUp = () => {
-      setIsDraggingH(false);
-      document.removeEventListener("mousemove", handleMouseMove);
-      document.removeEventListener("mouseup", handleMouseUp);
-    };
-
-    document.addEventListener("mousemove", handleMouseMove);
-    document.addEventListener("mouseup", handleMouseUp);
-  };
-
-  const handleMouseDownV = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDraggingV(true);
-    const startClientY = e.clientY;
-    const startThumbTop = thumbTop;
-
-    const handleMouseMove = (moveEvent) => {
-      const deltaY = moveEvent.clientY - startClientY;
-      let newThumbTop = startThumbTop + deltaY;
-      newThumbTop = Math.max(0, Math.min(S_height - thumbHeight, newThumbTop));
-      const newFractionY = newThumbTop / (S_height - thumbHeight);
-      const newYScroll = newFractionY * (H_total - H_visible);
-      const newY = -(newYScroll + total_minY) * zoom;
-      setViewport({ x, y: newY, zoom });
-    };
-
-    const handleMouseUp = () => {
-      setIsDraggingV(false);
-      document.removeEventListener("mousemove", handleMouseMove);
-      document.removeEventListener("mouseup", handleMouseUp);
-    };
-
-    document.addEventListener("mousemove", handleMouseMove);
-    document.addEventListener("mouseup", handleMouseUp);
-  };
-
-  const handleTrackClickH = (e) => {
-    if (e.target.className === "scrollbar-thumb") return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const clickX = e.clientX - rect.left;
-    let newThumbLeft = clickX - thumbWidth / 2;
-    newThumbLeft = Math.max(0, Math.min(S_width - thumbWidth, newThumbLeft));
-    const newFractionX = newThumbLeft / (S_width - thumbWidth);
-    const newXScroll = newFractionX * (W_total - W_visible);
-    const newX = -(newXScroll + total_minX) * zoom;
-    setViewport({ x: newX, y, zoom });
-  };
-
-  const handleTrackClickV = (e) => {
-    if (e.target.className === "scrollbar-thumb") return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const clickY = e.clientY - rect.top;
-    let newThumbTop = clickY - thumbHeight / 2;
-    newThumbTop = Math.max(0, Math.min(S_height - thumbHeight, newThumbTop));
-    const newFractionY = newThumbTop / (S_height - thumbHeight);
-    const newYScroll = newFractionY * (H_total - H_visible);
-    const newY = -(newYScroll + total_minY) * zoom;
-    setViewport({ x, y: newY, zoom });
-  };
-
-  return (
-    <>
-      {showH && (
-        <Panel position="bottom-left" style={{ left: `${trackMargin}px`, bottom: "8px", margin: 0, pointerEvents: "none" }}>
-          <div
-            className={`custom-scrollbar horizontal ${isDraggingH ? "active" : ""}`}
-            style={{
-              width: `${S_width}px`,
-              height: `${scrollbarThickness}px`,
-              background: "rgba(30, 41, 59, 0.5)",
-              borderRadius: "4px",
-              cursor: "pointer",
-              pointerEvents: "all",
-              position: "relative"
-            }}
-            onClick={handleTrackClickH}
-          >
-            <div
-              className="scrollbar-thumb"
-              style={{
-                position: "absolute",
-                left: `${thumbLeft}px`,
-                top: 0,
-                width: `${thumbWidth}px`,
-                height: "100%",
-                background: "rgba(148, 163, 184, 0.7)",
-                borderRadius: "4px",
-                cursor: "grab",
-                transition: "background 0.15s ease"
-              }}
-              onMouseDown={handleMouseDownH}
-            />
-          </div>
-        </Panel>
-      )}
-      {showV && (
-        <Panel position="top-right" style={{ right: "8px", top: `${trackMargin}px`, margin: 0, pointerEvents: "none" }}>
-          <div
-            className={`custom-scrollbar vertical ${isDraggingV ? "active" : ""}`}
-            style={{
-              height: `${S_height}px`,
-              width: `${scrollbarThickness}px`,
-              background: "rgba(30, 41, 59, 0.5)",
-              borderRadius: "4px",
-              cursor: "pointer",
-              pointerEvents: "all",
-              position: "relative"
-            }}
-            onClick={handleTrackClickV}
-          >
-            <div
-              className="scrollbar-thumb"
-              style={{
-                position: "absolute",
-                top: `${thumbTop}px`,
-                left: 0,
-                height: `${thumbHeight}px`,
-                width: "100%",
-                background: "rgba(148, 163, 184, 0.7)",
-                borderRadius: "4px",
-                cursor: "grab",
-                transition: "background 0.15s ease"
-              }}
-              onMouseDown={handleMouseDownV}
-            />
-          </div>
-        </Panel>
-      )}
-    </>
-  );
-};
-
+// ---------------------------------------------------------------------------
+// Dagre layout
+// ---------------------------------------------------------------------------
 function layoutGraph(nodes, edges) {
   const g = new dagre.graphlib.Graph();
   g.setDefaultEdgeLabel(() => ({}));
-  g.setGraph({ rankdir: "LR", nodesep: 80, ranksep: 120 });
-
-  nodes.forEach((node) => {
-    g.setNode(node.id, { width: 180, height: 75 });
-  });
-
-  edges.forEach((edge) => {
-    g.setEdge(edge.source, edge.target);
-  });
-
+  g.setGraph({ rankdir: "LR", nodesep: 100, ranksep: 160, marginx: 40, marginy: 40 });
+  nodes.forEach((n) => g.setNode(n.id, { width: 190, height: 90 }));
+  edges.forEach((e) => g.setEdge(e.source, e.target));
   dagre.layout(g);
-
-  return nodes.map((node) => {
-    const pos = g.node(node.id) || { x: 0, y: 0 };
-    return {
-      ...node,
-      position: {
-        x: pos.x - 90,
-        y: pos.y - 37
-      }
-    };
+  return nodes.map((n) => {
+    const p = g.node(n.id) || { x: 0, y: 0 };
+    return { ...n, position: { x: p.x - 95, y: p.y - 45 } };
   });
 }
 
-function App() {
-  const [text, setText] = useState(
-    "vendor_operator connects to vendor_vpn. vendor_vpn connects to Master SCADA Server. Master SCADA Server connects to Turbine HMI. Turbine HMI connects to PLC_Unit_1. PLC_Unit_1 connects to Valve_Actuator_A."
+// ---------------------------------------------------------------------------
+// Helper components
+// ---------------------------------------------------------------------------
+function EmptyState({ icon: Icon, message }) {
+  return (
+    <div className="empty-state">
+      <Icon size={28} />
+      <p>{message}</p>
+    </div>
   );
-  const [file, setFile] = useState(null);
-  const [selectedRole, setSelectedRole] = useState("vendor_operator");
-  const [message, setMessage] = useState("Upload architecture input files to begin analysis.");
-  const [loading, setLoading] = useState(false);
+}
 
-  // Core analysis results state
-  const [analysis, setAnalysis] = useState(null);
-  const [viewMode, setViewMode] = useState("asset"); // "asset" or "zone"
-  const [activeTab, setActiveTab] = useState("inputs"); // "inputs", "audit", "paths", "reachability"
+function SectionSep({ label }) {
+  return <div className="section-sep">{label}</div>;
+}
+
+// ---------------------------------------------------------------------------
+// RBAC Tab
+// ---------------------------------------------------------------------------
+function RBACTab({ rbacSummary, permissions }) {
+  const subjects    = rbacSummary?.S || [];
+  const actions     = rbacSummary?.R || [];
+  const perms       = rbacSummary?.permissions || permissions || [];
+  const hasData = subjects.length > 0;
+
+  if (!hasData) {
+    return (
+      <EmptyState
+        icon={UserCheck}
+        message="No RBAC file was uploaded. Upload a JSON/CSV/TXT policy file to see subjects, actions, and permissions extracted from the authoritative RBAC source."
+      />
+    );
+  }
+
+  return (
+    <>
+      <div className="card animate-in">
+        <div className="card-title"><UserCheck size={14} /> Subjects (S) — Authorization Principals</div>
+        <p className="hint">Extracted exclusively from the uploaded RBAC file. Never inferred from the diagram.</p>
+        <ul className="aasg-list">
+          {subjects.map((s, i) => (
+            <li key={i} className="rbac-subject-item">
+              <Lock size={11} />
+              <span>{s.name || s.id}</span>
+              <span style={{ marginLeft: "auto", opacity: 0.6, fontSize: "9px" }}>{s.kind}</span>
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      {actions.length > 0 && (
+        <div className="card animate-in">
+          <div className="card-title"><Activity size={14} /> Actions (R) — Permitted Operations</div>
+          <div className="actions-wrap">
+            {actions.map((a, i) => (
+              <span key={i} className="rbac-action-item">{a.name || a.id}</span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {perms.length > 0 && (
+        <div className="card animate-in">
+          <div className="card-title"><GitBranch size={14} /> Permissions (E_a sources)</div>
+          <div style={{ overflowX: "auto", maxHeight: 240, overflowY: "auto" }}>
+            <table className="perm-table">
+              <thead>
+                <tr>
+                  <th>Subject</th>
+                  <th>Action</th>
+                  <th>Object</th>
+                  <th>Role</th>
+                </tr>
+              </thead>
+              <tbody>
+                {perms.slice(0, 50).map((p, i) => (
+                  <tr key={i}>
+                    <td className="perm-sub">{p.subject}</td>
+                    <td className="perm-act">{p.action}</td>
+                    <td className="perm-obj">{p.object}</td>
+                    <td style={{ color: "#64748b", fontSize: "9px" }}>{p.role_provenance || "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Firewall Tab
+// ---------------------------------------------------------------------------
+function FirewallTab({ firewallSummary, firewallBlocked }) {
+  const rules   = firewallSummary?.rules || [];
+  const blocked = firewallBlocked || [];
+
+  if (rules.length === 0 && blocked.length === 0) {
+    return (
+      <EmptyState
+        icon={Network}
+        message="No firewall file was uploaded. Upload a JSON/CSV/TXT firewall rules file to constrain communication edges (Ec) in the AASG."
+      />
+    );
+  }
+
+  const allowed = rules.filter((r) => ["allow", "accept", "permit", "pass"].includes(r.action));
+  const denied  = rules.filter((r) => !["allow", "accept", "permit", "pass"].includes(r.action));
+
+  return (
+    <>
+      <div className="card animate-in">
+        <div className="card-title"><CheckCircle size={14} style={{ color: "var(--success)" }} /> Allowed Connections ({allowed.length})</div>
+        <ul className="aasg-list">
+          {allowed.map((r, i) => (
+            <li key={i} className="fw-rule-item allowed">
+              <span className="fw-src">{r.src_raw || r.src}</span>
+              <span className="fw-arrow">→</span>
+              <span className="fw-dst">{r.dst_raw || r.dst}</span>
+              <span className="badge badge-allowed">{r.protocol}{r.port ? `:${r.port}` : ""}</span>
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      {denied.length > 0 && (
+        <div className="card animate-in">
+          <div className="card-title"><XCircle size={14} style={{ color: "var(--danger)" }} /> Denied Rules ({denied.length})</div>
+          <ul className="aasg-list">
+            {denied.map((r, i) => (
+              <li key={i} className="fw-rule-item denied">
+                <span className="fw-src">{r.src_raw || r.src}</span>
+                <span className="fw-arrow">⊘</span>
+                <span className="fw-dst">{r.dst_raw || r.dst}</span>
+                <span className="badge badge-blocked">{r.protocol}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {blocked.length > 0 && (
+        <div className="card animate-in">
+          <div className="card-title"><ShieldAlert size={14} style={{ color: "var(--warning)" }} /> Blocked by Firewall ({blocked.length})</div>
+          <p className="hint">Architecture links removed from Ec because no firewall allow-rule was found.</p>
+          <ul className="aasg-list">
+            {blocked.map((b, i) => (
+              <li key={i} className="fw-blocked-item">
+                <XCircle size={10} />
+                <span>{b.src} → {b.dst}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// AASG Model Tab
+// ---------------------------------------------------------------------------
+function AASGTab({ aasg }) {
+  if (!aasg) return <EmptyState icon={GitBranch} message="Run analysis to see the formal AASG." />;
+
+  const subjects  = (aasg.V || []).filter((v) => v.vertex_type === "subject");
+  const objects   = (aasg.V || []).filter((v) => v.vertex_type === "object");
+  const ea        = aasg.E?.E_a || [];
+  const ec        = aasg.E?.E_c || [];
+  const stats     = aasg.stats || {};
+
+  return (
+    <>
+      {/* Math definition */}
+      <div className="math-banner animate-in">
+        <span className="math-expr">G = (V, E, Z)</span>
+        <span className="math-expr">V = S ∪ O</span>
+        <span className="math-expr">E = E<sub>a</sub> ∪ E<sub>c</sub></span>
+      </div>
+
+      {/* Stats row */}
+      <div className="stat-grid animate-in">
+        <div className="stat-cell"><span className="stat-val" style={{ color: "var(--subject-color)" }}>{stats.subject_count ?? subjects.length}</span><span className="stat-label">Subjects</span></div>
+        <div className="stat-cell"><span className="stat-val" style={{ color: "var(--object-color)" }}>{stats.object_count ?? objects.length}</span><span className="stat-label">Objects</span></div>
+        <div className="stat-cell"><span className="stat-val" style={{ color: "var(--ea-color)" }}>{stats.ea_count ?? ea.length}</span><span className="stat-label">Auth Edges</span></div>
+        <div className="stat-cell"><span className="stat-val" style={{ color: "var(--ec-color)" }}>{stats.ec_count ?? ec.length}</span><span className="stat-label">Comm Edges</span></div>
+      </div>
+
+      {/* Zones */}
+      <div className="card animate-in">
+        <div className="aasg-section-title"><span className="zone-dot" />Zones (Z) — Security Boundaries</div>
+        <ul className="aasg-list">
+          {(aasg.Z || []).map((z, i) => (
+            <li key={i} className="aasg-zone-item">
+              <span className="zone-dot" />
+              <span>{typeof z === "string" ? z : (z.name || z.id)}</span>
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      {/* Vertices */}
+      <div className="card animate-in">
+        <div className="aasg-section-title"><Eye size={11} />Vertices (V = S ∪ O) — {aasg.V?.length || 0} total</div>
+        <ul className="aasg-list">
+          {subjects.map((v, i) => (
+            <li key={`s-${i}`} className="aasg-vertex-item is-subject">
+              <div className="vertex-header">
+                <span className="badge badge-subject">S</span>
+                <span className="vertex-id">{v.id}</span>
+              </div>
+              <div className="vertex-meta">θ = {v.label?.theta || "external_transit"}</div>
+            </li>
+          ))}
+          {objects.map((v, i) => (
+            <li key={`o-${i}`} className="aasg-vertex-item is-object">
+              <div className="vertex-header">
+                <span className="badge badge-object">O</span>
+                <span className="vertex-id">{v.id}</span>
+              </div>
+              <div className="vertex-meta">θ = {v.label?.theta || "unassigned_zone"} · type = {v.label?.type || "unknown"}</div>
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      {/* Authorization Edges Ea */}
+      <div className="card animate-in">
+        <div className="aasg-section-title" style={{ color: "#f59e0b" }}>
+          <span style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--ea-color)", display: "inline-block" }} />
+          Authorization Edges E<sub>a</sub> ({ea.length}) — subject → object
+        </div>
+        <p className="hint" style={{ marginBottom: 6 }}>Actions are edge labels, not graph nodes. Role provenance explains each permission.</p>
+        {ea.length === 0 ? (
+          <p className="hint">No authorization edges. Upload an RBAC file to generate Ea.</p>
+        ) : (
+          <ul className="aasg-list">
+            {ea.map((e, i) => {
+              const l = e.label || {};
+              return (
+                <li key={i} className="aasg-edge-item is-ea">
+                  <div className="edge-flow">
+                    <span className="edge-node">{e.source}</span>
+                    <span className="edge-arrow">→</span>
+                    <span className="edge-node">{e.target}</span>
+                    <span className="edge-label-pill ea-pill">{l.action || "access"}</span>
+                  </div>
+                  <div className="edge-meta">
+                    role: {l.role_provenance || e.source} · {l.source_zone || "?"} → {l.target_zone || "?"}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+
+      {/* Communication Edges Ec */}
+      <div className="card animate-in">
+        <div className="aasg-section-title" style={{ color: "#64748b" }}>
+          <span style={{ width: 8, height: 2, borderRadius: 1, background: "var(--ec-color)", display: "inline-block" }} />
+          Communication Edges E<sub>c</sub> ({ec.length}) — object → object
+        </div>
+        <p className="hint" style={{ marginBottom: 6 }}>Architecture connections filtered by firewall rules. Protocol is the edge label.</p>
+        {ec.length === 0 ? (
+          <p className="hint">No communication edges found in the architecture.</p>
+        ) : (
+          <ul className="aasg-list">
+            {ec.map((e, i) => {
+              const l = e.label || {};
+              return (
+                <li key={i} className="aasg-edge-item is-ec">
+                  <div className="edge-flow">
+                    <span className="edge-node">{e.source}</span>
+                    <span className="edge-arrow">→</span>
+                    <span className="edge-node">{e.target}</span>
+                    <span className="edge-label-pill ec-pill">{l.protocol || "unknown"}{l.port ? `:${l.port}` : ""}</span>
+                  </div>
+                  <div className="edge-meta">
+                    {l.source_zone || "?"} → {l.target_zone || "?"} · type: {l.destination_type || "unknown"}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+
+      {/* Actions R catalogue */}
+      {(aasg.R || []).length > 0 && (
+        <div className="card animate-in">
+          <div className="aasg-section-title"><Activity size={11} />Actions (R) — Catalogue</div>
+          <div className="actions-wrap">
+            {aasg.R.map((a, i) => (
+              <span key={i} className="rbac-action-item">{a.name || a.id || a}</span>
+            ))}
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Main App
+// ---------------------------------------------------------------------------
+function App() {
+  const [text, setText]             = useState("vendor_operator connects to vendor_vpn. vendor_vpn connects to Master SCADA Server. Master SCADA Server connects to Turbine HMI. Turbine HMI connects to PLC_Unit_1.");
+  const [archFile, setArchFile]     = useState(null);
+  const [rbacFile, setRbacFile]     = useState(null);
+  const [firewallFile, setFirewallFile] = useState(null);
+  const [message, setMessage]       = useState("Upload files to begin AASG extraction.");
+  const [loading, setLoading]       = useState(false);
+  const [analysis, setAnalysis]     = useState(null);
+  const [viewMode, setViewMode]     = useState("asset");
+  const [activeTab, setActiveTab]   = useState("inputs");
   const [activePathIndex, setActivePathIndex] = useState(-1);
-  const [blastNode, setBlastNode] = useState(null);
+  const [blastNode, setBlastNode]   = useState(null);
   const [blastReport, setBlastReport] = useState(null);
 
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  const onConnect = useCallback((p) => setEdges((eds) => addEdge(p, eds)), [setEdges]);
 
-  const onConnect = useCallback(
-    (params) => setEdges((eds) => addEdge(params, eds)),
-    [setEdges]
-  );
-
-  // Computes the visual nodes/edges to display depending on settings
-  const applyViewPayload = useCallback(() => {
+  // ---------------------------------------------------------------------------
+  // Render graph
+  // ---------------------------------------------------------------------------
+  const applyView = useCallback(() => {
     if (!analysis) return;
 
     if (viewMode === "zone") {
-      // Zone macro view
-      const rawNodes = analysis.react_flow_macro_zone_view.nodes.map((n) => ({
+      const rawNodes = (analysis.react_flow_macro_zone_view?.nodes || []).map((n) => ({
         ...n,
         style: {
-          background: "#1e293b",
-          border: "2px solid #3b82f6",
-          color: "#f8fafc",
-          borderRadius: 12,
-          padding: 16,
-          fontSize: 14,
-          fontWeight: 600,
-          textAlign: "center",
-          width: 180
-        }
+          background: "#0d1c34", border: "2px solid #3b82f6",
+          color: "#f0f6ff", borderRadius: 12, padding: 16,
+          fontSize: 13, fontWeight: 700, textAlign: "center", width: 180,
+        },
       }));
-      const rawEdges = analysis.react_flow_macro_zone_view.edges.map((e) => ({
-        ...e,
-        animated: true,
+      const rawEdges = (analysis.react_flow_macro_zone_view?.edges || []).map((e) => ({
+        ...e, animated: false,
         markerEnd: { type: MarkerType.ArrowClosed, color: "#3b82f6" },
-        style: { stroke: "#3b82f6", strokeWidth: 2 }
+        style: { stroke: "#3b82f6", strokeWidth: 2 },
       }));
-
-      const laidOut = layoutGraph(rawNodes, rawEdges);
-      setNodes(laidOut);
+      setNodes(layoutGraph(rawNodes, rawEdges));
       setEdges(rawEdges);
       return;
     }
 
-    // Detailed asset view (Purdue grouped layout)
-    const baseNodes = JSON.parse(JSON.stringify(analysis.react_flow_asset_view.nodes));
-    const baseEdges = JSON.parse(JSON.stringify(analysis.react_flow_asset_view.edges));
+    const baseNodes = JSON.parse(JSON.stringify(analysis.react_flow_asset_view?.nodes || []));
+    const baseEdges = JSON.parse(JSON.stringify(analysis.react_flow_asset_view?.edges || []));
 
-    let pathNodeIds = new Set();
+    let pathNodeIds   = new Set();
     let pathEdgePairs = new Set();
 
-    // Check if we have an active threat path highlighted
-    if (activePathIndex >= 0 && analysis.attack_paths && analysis.attack_paths[activePathIndex]) {
-      const activePath = analysis.attack_paths[activePathIndex].path;
-      pathNodeIds = new Set(activePath);
-      for (let i = 0; i < activePath.length - 1; i++) {
-        pathEdgePairs.add(`${activePath[i]}->${activePath[i+1]}`);
-      }
+    if (activePathIndex >= 0 && analysis.attack_paths?.[activePathIndex]) {
+      const p = analysis.attack_paths[activePathIndex].path;
+      pathNodeIds = new Set(p);
+      for (let i = 0; i < p.length - 1; i++) pathEdgePairs.add(`${p[i]}->${p[i+1]}`);
     }
 
-    // Check if we have active blast radius highlighted
-    const blastExposedIds = new Set(blastReport?.exposed_entities?.critical_assets || []);
-    (blastReport?.exposed_entities?.physical_processes || []).forEach(p => blastExposedIds.add(p));
+    const blastIds = new Set([
+      ...(blastReport?.exposed_entities?.critical_assets || []),
+      ...(blastReport?.exposed_entities?.physical_processes || []),
+    ]);
 
-    // Map properties to React Flow nodes
-    const renderedNodes = baseNodes.map(n => {
+    const renderedNodes = baseNodes.map((n) => {
       if (n.type === "icsNode") {
         return {
           ...n,
           data: {
             ...n.data,
-            onBlastRadius: handleAnalyzeBlastRadius,
-            in_attack_path: pathNodeIds.has(n.id),
-            is_exposed_blast: blastExposedIds.has(n.id) || (blastReport && n.id === blastNode),
-            is_compromised_source: blastNode && n.id === blastNode
-          }
+            onBlastRadius:       handleBlastRadius,
+            in_attack_path:      pathNodeIds.has(n.id),
+            is_exposed_blast:    blastIds.has(n.id) || (blastReport && n.id === blastNode),
+            is_compromised_source: blastNode && n.id === blastNode,
+          },
         };
       }
-      // Group container rendering
-      return {
-        ...n,
-        style: {
-          ...n.style,
-          background: "rgba(15, 23, 42, 0.03)",
-          border: "2px dashed #94a3b8",
-          borderRadius: 16,
-          color: "#475569",
-          fontWeight: 700,
-          fontSize: 12,
-          padding: 8
-        }
-      };
+      return { ...n, style: { width: n.style?.width, height: n.style?.height } };
     });
 
-    // Map properties to React Flow edges
-    const renderedEdges = baseEdges.map(e => {
-      const edgeKey = `${e.source}->${e.target}`;
-      const inPath = pathEdgePairs.has(edgeKey);
-      
-      if (inPath) {
-        return {
-          ...e,
-          animated: true,
-          style: { stroke: "#ef4444", strokeWidth: 4.5 },
-          markerEnd: { type: MarkerType.ArrowClosed, color: "#ef4444" }
-        };
-      } else if (activePathIndex >= 0) {
-        // Fade out other edges
-        return {
-          ...e,
-          style: { stroke: "#cbd5e1", strokeWidth: 1.5, opacity: 0.3 }
-        };
-      }
-      
-      // Standard layout
+    const renderedEdges = baseEdges.map((e) => {
+      const key    = `${e.source}->${e.target}`;
+      const inPath = pathEdgePairs.has(key);
+      const faded  = activePathIndex >= 0 && !inPath;
+      const label  = e.data?.label || "";
+
+      const color = inPath
+        ? "#ef4444"
+        : faded
+        ? "rgba(51,65,85,0.12)"
+        : "rgba(71,85,105,0.5)";
+
       return {
         ...e,
-        animated: e.animated || false,
-        style: { stroke: "#475569", strokeWidth: 2 },
-        markerEnd: { type: MarkerType.ArrowClosed, color: "#475569" }
+        type: "smoothstep",
+        label: label,
+        labelStyle: { fill: faded ? "rgba(100,116,139,0.3)" : "#64748b", fontSize: 8, fontWeight: 600, fontFamily: "'JetBrains Mono', monospace" },
+        labelBgPadding: [4, 3],
+        labelBgBorderRadius: 4,
+        labelBgStyle: { fill: "#060d1a", fillOpacity: faded ? 0.15 : 0.9, stroke: "rgba(51,65,85,0.5)", strokeWidth: 1 },
+        animated: false,
+        style: { stroke: color, strokeWidth: inPath ? 2.5 : faded ? 0.6 : 1.2, opacity: faded ? 0.35 : 1 },
+        markerEnd: { type: MarkerType.ArrowClosed, color, width: inPath ? 14 : 10, height: inPath ? 14 : 10 },
       };
     });
 
     setNodes(renderedNodes);
     setEdges(renderedEdges);
-
   }, [analysis, viewMode, activePathIndex, blastNode, blastReport]);
 
-  useEffect(() => {
-    applyViewPayload();
-  }, [applyViewPayload]);
+  useEffect(() => { applyView(); }, [applyView]);
 
-  const handleAnalyzeBlastRadius = async (nodeId) => {
-    if (!analysis || !analysis.raw_model_data) return;
+  // ---------------------------------------------------------------------------
+  // Blast radius
+  // ---------------------------------------------------------------------------
+  const handleBlastRadius = async (nodeId) => {
+    if (!analysis?.raw_model_data) return;
     try {
-      setMessage(`Running blast radius analysis for compromised node: ${nodeId}...`);
+      setMessage(`Computing blast radius for: ${nodeId}…`);
       const res = await axios.post(`${API_URL}/blast-radius`, {
         graph_data: analysis.raw_model_data,
-        node_id: nodeId
+        node_id: nodeId,
       });
-      if (res.data.error) {
-        setMessage(`Blast analysis error: ${res.data.error}`);
-      } else {
-        setBlastNode(nodeId);
-        setBlastReport(res.data);
-        setActivePathIndex(-1); // Turn off attack paths
-        setActiveTab("reachability");
-        setMessage(`Blast radius calculation complete for: ${nodeId}`);
-      }
+      if (res.data.error) { setMessage(res.data.error); return; }
+      setBlastNode(nodeId);
+      setBlastReport(res.data);
+      setActivePathIndex(-1);
+      setActiveTab("impact");
+      setMessage(`Blast radius complete for: ${nodeId}`);
     } catch (err) {
-      console.error(err);
-      setMessage(`Blast radius analysis failed: ${err.message}`);
+      setMessage(`Blast radius failed: ${err.message}`);
     }
   };
 
-  const clearBlastHighlight = () => {
-    setBlastNode(null);
-    setBlastReport(null);
-  };
+  const clearBlast = () => { setBlastNode(null); setBlastReport(null); };
 
-  const handleResponseData = (data) => {
+  // ---------------------------------------------------------------------------
+  // Response handler
+  // ---------------------------------------------------------------------------
+  const handleResponse = (data) => {
     setAnalysis(data);
     setActivePathIndex(-1);
-    clearBlastHighlight();
+    clearBlast();
 
     if (data.validation_report && !data.validation_report.is_valid) {
       setActiveTab("audit");
-      setMessage("Analysis complete. Architectural errors detected in security validation!");
-    } else if (data.attack_paths && data.attack_paths.length > 0) {
-      setActiveTab("paths");
-      setMessage(`Analysis complete. Found ${data.attack_paths.length} potential risk paths!`);
+      setMessage("Analysis complete. Structural errors detected.");
+    } else if (data.attack_paths?.length > 0) {
+      setActiveTab("vectors");
+      setMessage(`Analysis complete — ${data.attack_paths.length} risk vector(s) found.`);
     } else {
-      setActiveTab("audit");
-      setMessage("Analysis complete. Architecture is structurally sound!");
+      setActiveTab("aasg");
+      setMessage("Analysis complete. Formal AASG model built successfully.");
     }
   };
 
-  const generateFromText = async () => {
+  // ---------------------------------------------------------------------------
+  // Upload handler
+  // ---------------------------------------------------------------------------
+  const generateFromFile = async () => {
+    if (!archFile) { setMessage("Please select an Architecture Diagram first."); return; }
     try {
       setLoading(true);
-      setMessage("Building security model from text...");
-      const res = await axios.post(
-        `${API_URL}/generate-from-text`,
-        { text, role: selectedRole },
-        { headers: { "Content-Type": "application/json" } }
-      );
-      if (res.data.error) {
-        setMessage(res.data.error);
-      } else {
-        handleResponseData(res.data);
-      }
+      setMessage("Running Phase 1 extraction: RBAC → Firewall → Architecture → Unified Model…");
+      const fd = new FormData();
+      fd.append("architecture_file", archFile);
+      if (rbacFile)     fd.append("rbac_file", rbacFile);
+      if (firewallFile) fd.append("firewall_file", firewallFile);
+
+      const res = await axios.post(`${API_URL}/upload`, fd, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+      res.data.error ? setMessage(res.data.error) : handleResponse(res.data);
     } catch (err) {
-      console.error(err);
-      setMessage(err.message || "Backend connection error");
+      setMessage(err.message || "Upload failed");
     } finally {
       setLoading(false);
     }
   };
 
-  const generateFromFile = async () => {
-    if (!file) {
-      setMessage("Please select a file first.");
-      return;
-    }
+  // ---------------------------------------------------------------------------
+  // Text input handler (alternative architecture source)
+  // ---------------------------------------------------------------------------
+  const generateFromText = async () => {
+    if (!text.trim()) { setMessage("No architecture text provided."); return; }
     try {
       setLoading(true);
-      setMessage(`Uploading and auditing file: ${file.name}...`);
-      const formData = new FormData();
-      formData.append("file", file);
-
-      const res = await axios.post(
-        `${API_URL}/upload?role=${encodeURIComponent(selectedRole)}`,
-        formData
-      );
-      
-      if (res.data.error) {
-        setMessage(res.data.error);
-      } else {
-        handleResponseData(res.data);
-      }
+      setMessage("Building model from text description…");
+      const res = await axios.post(`${API_URL}/generate-from-text`, { text }, {
+        headers: { "Content-Type": "application/json" },
+      });
+      res.data.error ? setMessage(res.data.error) : handleResponse(res.data);
     } catch (err) {
-      console.error(err);
-      setMessage(err.message || "File analysis failed");
+      setMessage(err.message || "Backend error");
     } finally {
       setLoading(false);
     }
@@ -639,325 +622,382 @@ function App() {
 
   const downloadJson = () => {
     if (!analysis) return;
-    const blob = new Blob([JSON.stringify(analysis, null, 2)], {
-      type: "application/json"
-    });
+    const blob = new Blob([JSON.stringify(analysis, null, 2)], { type: "application/json" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = "ics-security-model.json";
+    a.download = "aasg-model.json";
     a.click();
   };
 
+  // ---------------------------------------------------------------------------
+  // UI helpers
+  // ---------------------------------------------------------------------------
+  const tabDef = [
+    { id: "inputs",    label: "Inputs",     icon: Upload,      alwaysOn: true },
+    { id: "audit",     label: "Audit",      icon: AlertTriangle },
+    { id: "vectors",   label: "Risk Vectors", icon: ShieldAlert },
+    { id: "impact",    label: "Impact",     icon: Zap },
+    { id: "rbac",      label: "RBAC",       icon: UserCheck },
+    { id: "firewall",  label: "Firewall",   icon: Network },
+    { id: "aasg",      label: "AASG",       icon: GitBranch },
+  ];
+
+  // ---------------------------------------------------------------------------
+  // Render
+  // ---------------------------------------------------------------------------
   return (
     <div className="app">
+      {/* ── Sidebar ──────────────────────────────────────────────────── */}
       <aside className="sidebar">
+        {/* Brand */}
         <div className="brand">
-          <Shield size={28} className="shield-icon" />
-          <div>
-            <h1>ICS Audit & Security Graph</h1>
-            <p>Phase 2: ISA-62443 Threat Modeler & Parser</p>
+          <div className="brand-icon"><Shield size={20} /></div>
+          <div className="brand-text">
+            <h1>ICS AASG Analyzer</h1>
+            <p>Authorization Attack Surface Graph · ISA-62443</p>
           </div>
         </div>
 
-        {/* Tab Selector buttons */}
-        <div className="tab-menu">
-          <button 
-            className={`tab-btn ${activeTab === "inputs" ? "active" : ""}`}
-            onClick={() => setActiveTab("inputs")}
-          >
-            Inputs
-          </button>
-          <button 
-            className={`tab-btn ${activeTab === "audit" ? "active" : ""}`}
-            onClick={() => setActiveTab("audit")}
-            disabled={!analysis}
-          >
-            Audit Report
-          </button>
-          <button 
-            className={`tab-btn ${activeTab === "paths" ? "active" : ""}`}
-            onClick={() => setActiveTab("paths")}
-            disabled={!analysis}
-          >
-            Attack Paths
-          </button>
-          <button 
-            className={`tab-btn ${activeTab === "reachability" ? "active" : ""}`}
-            onClick={() => setActiveTab("reachability")}
-            disabled={!analysis}
-          >
-            Blast Radius
-          </button>
+        {/* Tabs */}
+        <div className="tab-nav">
+          {tabDef.map((t) => (
+            <button
+              key={t.id}
+              className={`tab-btn ${activeTab === t.id ? "active" : ""}`}
+              onClick={() => setActiveTab(t.id)}
+              disabled={!t.alwaysOn && !analysis}
+              title={t.label}
+            >
+              {t.label}
+            </button>
+          ))}
         </div>
+        <div className="tab-divider" />
 
-        {/* Tab 1: Inputs & Uploads */}
+        {/* ── TAB: Inputs ─────────────────────────────────────────── */}
         {activeTab === "inputs" && (
           <div className="tab-content">
-            <section className="card">
-              <h2>
-                <Target size={18} /> Entry-Role Configuration
-              </h2>
-              <p className="hint">Specify which operator/entry-point role starts the attack path queries:</p>
-              <input
-                type="text"
-                placeholder="e.g. vendor_operator, admin"
-                value={selectedRole}
-                onChange={(e) => setSelectedRole(e.target.value)}
-                className="role-input"
-              />
-            </section>
+            {/* File Upload */}
+            <div className="card">
+              <div className="card-title"><Upload size={14} /> Phase 1 Data Sources</div>
+              <p className="hint">Upload three input files. RBAC is the authoritative source for subjects and permissions.</p>
 
-            <section className="card">
-              <h2>
-                <FileText size={18} /> Textual Description
-              </h2>
-              <textarea 
-                value={text} 
-                onChange={(e) => setText(e.target.value)} 
-                placeholder="Type architecture description..."
-              />
-              <button onClick={generateFromText} disabled={loading}>
-                {loading ? <RefreshCw className="animate-spin" size={16} /> : "Compile Text Model"}
-              </button>
-            </section>
-
-            <section className="card">
-              <h2>
-                <Upload size={18} /> File Upload
-              </h2>
-              <input
-                type="file"
-                accept=".png,.jpg,.jpeg,.webp,.pdf,.csv,.xlsx,.txt"
-                onChange={(e) => setFile(e.target.files[0])}
-              />
-              <button onClick={generateFromFile} disabled={loading}>
-                {loading ? <RefreshCw className="animate-spin" size={16} /> : "Upload & Analyze Architecture"}
-              </button>
-              <p className="hint">Supports Architecture Images, PDFs, CSV, and Excel tables.</p>
-            </section>
-          </div>
-        )}
-
-        {/* Tab 2: Security Validation Audits */}
-        {activeTab === "audit" && analysis && (
-          <div className="tab-content animate-fade">
-            <section className="card score-card">
-              <h2>Architecture Health Index</h2>
-              <div className="gauge-box">
-                <span className={`gauge-score ${analysis.validation_report.is_valid ? "green" : "red"}`}>
-                  {analysis.validation_report.is_valid ? "100%" : "FAIL"}
-                </span>
-                <span className="gauge-label">Structural DAG Verification</span>
+              <div className="file-group">
+                <label className="file-label">
+                  <span className="file-label-text">1. Architecture Diagram (Image / PDF) *</span>
+                  <div className={`drop-zone ${archFile ? "has-file" : ""}`}>
+                    <input type="file" accept=".png,.jpg,.jpeg,.webp,.pdf" onChange={(e) => setArchFile(e.target.files[0])} />
+                    <Cpu size={14} className="drop-zone-icon" />
+                    <span className="drop-zone-text">{archFile ? archFile.name : "Select architecture diagram"}</span>
+                  </div>
+                </label>
               </div>
-            </section>
 
-            <section className="card audit-card">
-              <h2>
-                <AlertTriangle size={18} style={{ color: "#ef4444" }} /> Validation Errors ({analysis.validation_report.errors.length})
-              </h2>
-              {analysis.validation_report.errors.length === 0 ? (
-                <p className="audit-ok">No structural errors. Graph is a valid DAG.</p>
-              ) : (
-                <ul className="audit-list error-list">
-                  {analysis.validation_report.errors.map((err, i) => (
-                    <li key={i}>{err}</li>
-                  ))}
-                </ul>
-              )}
-            </section>
+              <div className="file-group">
+                <label className="file-label">
+                  <span className="file-label-text">2. RBAC Policy File (JSON / CSV / TXT / YAML)</span>
+                  <div className={`drop-zone secondary ${rbacFile ? "has-file" : ""}`}>
+                    <input type="file" accept=".json,.csv,.txt,.yaml,.yml" onChange={(e) => setRbacFile(e.target.files[0])} />
+                    <Lock size={14} className="drop-zone-icon" />
+                    <span className="drop-zone-text">{rbacFile ? rbacFile.name : "Subjects · Actions · Permissions"}</span>
+                  </div>
+                </label>
+              </div>
 
-            <section className="card audit-card">
-              <h2>
-                <ShieldAlert size={18} style={{ color: "#f97316" }} /> Security Warnings ({analysis.validation_report.warnings.length})
-              </h2>
-              {analysis.validation_report.warnings.length === 0 ? (
-                <p className="audit-ok">No security warnings found.</p>
-              ) : (
-                <ul className="audit-list warning-list">
-                  {analysis.validation_report.warnings.map((warn, i) => (
-                    <li key={i}>{warn}</li>
-                  ))}
-                </ul>
-              )}
-            </section>
-          </div>
-        )}
+              <div className="file-group">
+                <label className="file-label">
+                  <span className="file-label-text">3. Firewall Rules File (JSON)</span>
+                  <div className={`drop-zone secondary ${firewallFile ? "has-file" : ""}`}>
+                    <input type="file" accept=".json" onChange={(e) => setFirewallFile(e.target.files[0])} />
+                    <Network size={14} className="drop-zone-icon" />
+                    <span className="drop-zone-text">{firewallFile ? firewallFile.name : "Constrains Ec edges (JSON)"}</span>
+                  </div>
+                </label>
+              </div>
 
-        {/* Tab 3: Quantitative Threat Path Inspector */}
-        {activeTab === "paths" && analysis && (
-          <div className="tab-content animate-fade">
-            <section className="card">
-              <h2>Top Critical Attack Vectors</h2>
-              <p className="hint">Discovered paths from '{selectedRole || "Entry Points"}' to critical final targets:</p>
-              
-              {analysis.attack_paths.length === 0 ? (
-                <p className="audit-ok">No threat vectors found bridging entry roles to targets.</p>
-              ) : (
-                <div className="paths-list">
-                  {analysis.attack_paths.map((path, idx) => (
-                    <div 
-                      key={idx}
-                      className={`path-item ${activePathIndex === idx ? "selected" : ""}`}
-                      onClick={() => {
-                        clearBlastHighlight();
-                        setActivePathIndex(activePathIndex === idx ? -1 : idx);
-                      }}
-                    >
-                      <div className="path-meta">
-                        <span className="path-idx">Vector #{idx + 1}</span>
-                        <span className="path-risk">Risk: {path.overall_risk}</span>
-                      </div>
-                      <div className="path-details">
-                        <span>Impact: {path.impact_score}</span>
-                        <span>Likelihood: {Math.round(path.likelihood_score * 100)}%</span>
-                      </div>
-                      <div className="path-narrative-short">
-                        {path.path.join(" ➔ ")}
-                      </div>
-                    </div>
-                  ))}
+              <button className="btn btn-primary" onClick={generateFromFile} disabled={loading || !archFile}>
+                {loading ? <RefreshCw size={14} className="animate-spin" /> : <ChevronRight size={14} />}
+                {loading ? "Extracting…" : "Run Phase 1 Extraction"}
+              </button>
+            </div>
+
+            {/* Text input — alternative architecture source */}
+            <SectionSep label="or" />
+            <div className="card">
+              <div className="card-title"><FileText size={14} /> Text Architecture Description</div>
+              <p className="hint">Alternative architecture source. Describe connections as text. Produces the same A={'{'}Z,E,S,O,R{'}'} structure.</p>
+              <textarea
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                placeholder="e.g. vendor_vpn connects to scada_server. scada_server connects to turbine_plc."
+              />
+              <button className="btn btn-secondary" onClick={generateFromText} disabled={loading}>
+                {loading ? <RefreshCw size={14} className="animate-spin" /> : <FileText size={14} />}
+                Parse Text Architecture
+              </button>
+            </div>
+
+            {/* Model summary after analysis */}
+            {analysis?.raw_model_data && (
+              <div className="card animate-in">
+                <div className="card-title"><Database size={14} /> Unified Model A = {'{'}Z, E, S, O, R{'}'}</div>
+                <div className="stat-grid">
+                  <div className="stat-cell">
+                    <span className="stat-val" style={{ color: "var(--accent-bright)" }}>{analysis.raw_model_data.Z?.length || analysis.raw_model_data.zones?.length || 0}</span>
+                    <span className="stat-label">Zones (Z)</span>
+                  </div>
+                  <div className="stat-cell">
+                    <span className="stat-val" style={{ color: "var(--subject-color)" }}>{analysis.raw_model_data.S?.length || analysis.raw_model_data.roles?.length || 0}</span>
+                    <span className="stat-label">Subjects (S)</span>
+                  </div>
+                  <div className="stat-cell">
+                    <span className="stat-val" style={{ color: "var(--object-color)" }}>{analysis.raw_model_data.O?.length || analysis.raw_model_data.assets?.length || 0}</span>
+                    <span className="stat-label">Objects (O)</span>
+                  </div>
+                  <div className="stat-cell">
+                    <span className="stat-val" style={{ color: "var(--ea-color)" }}>{analysis.raw_model_data.R?.length || 0}</span>
+                    <span className="stat-label">Actions (R)</span>
+                  </div>
                 </div>
-              )}
-            </section>
-
-            {activePathIndex >= 0 && analysis.attack_paths[activePathIndex] && (
-              <section className="card narrative-card animate-fade">
-                <h2>Analyst Attack Narrative</h2>
-                <div className="narrative-text">
-                  {analysis.attack_paths[activePathIndex].narrative.split("\n\n").map((para, i) => (
-                    <p key={i}>{para}</p>
-                  ))}
-                  {analysis.attack_paths[activePathIndex].realism_warnings.length > 0 && (
-                    <div className="realism-box">
-                      <strong>Architecture Warnings:</strong>
-                      <ul>
-                        {analysis.attack_paths[activePathIndex].realism_warnings.map((w, i) => (
-                          <li key={i}>{w}</li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
+                <div className="stat-divider" />
+                <div className="stat-subrow">
+                  <div>Auth Edges E<sub>a</sub>: <strong>{analysis.raw_model_data.permissions?.length || 0}</strong></div>
+                  <div>Comm Edges E<sub>c</sub>: <strong>{analysis.raw_model_data.communications?.length || 0}</strong></div>
                 </div>
-              </section>
+                {analysis.raw_model_data.firewall_blocked?.length > 0 && (
+                  <div style={{ marginTop: 8, fontSize: 10, color: "var(--warning)", display: "flex", alignItems: "center", gap: 5 }}>
+                    <ShieldAlert size={11} />
+                    {analysis.raw_model_data.firewall_blocked.length} connection(s) blocked by firewall policy
+                  </div>
+                )}
+                <button className="btn btn-secondary" style={{ marginTop: 10 }} onClick={downloadJson}>Download Full JSON</button>
+              </div>
             )}
           </div>
         )}
 
-        {/* Tab 4: Cyber-Physical Reachability & Blast Radius */}
-        {activeTab === "reachability" && analysis && (
-          <div className="tab-content animate-fade">
-            <section className="card">
-              <h2>Compromise Blast Radius</h2>
-              <p className="hint">Exposes downstream cyber/physical processes if an asset is compromised.</p>
-              
-              {!blastNode ? (
-                <div className="blast-empty">
-                  <Terminal size={32} />
-                  <p>Click the <strong>Impact</strong> button on any asset node in the diagram to compute its structural compromise blast radius.</p>
+        {/* ── TAB: Audit ──────────────────────────────────────────── */}
+        {activeTab === "audit" && analysis && (
+          <div className="tab-content animate-in">
+            <div className="card">
+              <div className="card-title"><Shield size={14} /> Architecture Health</div>
+              <div className="health-score">
+                <div className={`health-number ${analysis.validation_report.is_valid ? "ok" : "bad"}`}>
+                  {analysis.validation_report.is_valid ? "✓" : "✗"}
                 </div>
-              ) : (
-                <div className="blast-report">
-                  <div className="blast-header">
-                    <h3>Compromised: <span>{blastNode}</span></h3>
-                    <button className="clear-btn" onClick={clearBlastHighlight}>Clear</button>
-                  </div>
-                  
-                  {blastReport && (
-                    <div className="blast-stats">
-                      <div className="blast-stat">
-                        <span className="num">{blastReport.operational_summary.total_assets_exposed}</span>
-                        <span className="lbl">Total Assets Exposed</span>
-                      </div>
-                      <div className="blast-stat">
-                        <span className="num">{blastReport.operational_summary.critical_assets_exposed}</span>
-                        <span className="lbl">Critical Cyber Exposed</span>
-                      </div>
-                      <div className="blast-stat">
-                        <span className="num">{blastReport.operational_summary.physical_processes_exposed}</span>
-                        <span className="lbl">Physical Processes Lost</span>
-                      </div>
-                    </div>
-                  )}
-
-                  {blastReport && blastReport.exposed_entities.critical_assets.length > 0 && (
-                    <div className="blast-details">
-                      <h4>Exposed Critical Cyber:</h4>
-                      <ul>
-                        {blastReport.exposed_entities.critical_assets.map((a, i) => (
-                          <li key={i}>{a}</li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-
-                  {blastReport && blastReport.exposed_entities.physical_processes.length > 0 && (
-                    <div className="blast-details">
-                      <h4>Compromised Physics:</h4>
-                      <ul>
-                        {blastReport.exposed_entities.physical_processes.map((p, i) => (
-                          <li key={i}>{p}</li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
+                <div className="health-label">
+                  {analysis.validation_report.is_valid ? "Graph is structurally valid" : "Structural errors detected"}
                 </div>
-              )}
-            </section>
+              </div>
+            </div>
 
-            <section className="card">
-              <h2>Cyber-to-Physical Exposure Vectors</h2>
-              <p className="hint">Direct multi-hop connections starting from entry points terminating at Level 0 actuators:</p>
-              {analysis.reachability_data.cyber_physical_vectors.length === 0 ? (
-                <p className="audit-ok">No direct cyber-physical exposure paths found.</p>
-              ) : (
-                <ul className="vector-list">
-                  {analysis.reachability_data.cyber_physical_vectors.map((vec, i) => (
-                    <li key={i}>
-                      <div className="vec-title">{vec.source} ➔ {vec.target}</div>
-                      <div className="vec-meta">
-                        <span>Confidence: {vec.confidence}</span>
-                        <span>Length: {vec.path_length} hops</span>
-                      </div>
-                      <div className="vec-summary">{vec.explanation.summary}</div>
-                    </li>
+            <div className="card">
+              <div className="card-title"><AlertTriangle size={14} style={{ color: "var(--danger)" }} /> Errors ({analysis.validation_report.errors.length})</div>
+              {analysis.validation_report.errors.length === 0
+                ? <p className="audit-ok"><CheckCircle size={12} /> No errors detected.</p>
+                : <ul className="audit-list">{analysis.validation_report.errors.map((e, i) => <li key={i} className="audit-error-item">{e}</li>)}</ul>
+              }
+            </div>
+
+            <div className="card">
+              <div className="card-title"><ShieldAlert size={14} style={{ color: "var(--warning)" }} /> Warnings ({analysis.validation_report.warnings.length})</div>
+              {analysis.validation_report.warnings.length === 0
+                ? <p className="audit-ok"><CheckCircle size={12} /> No warnings.</p>
+                : <ul className="audit-list">{analysis.validation_report.warnings.map((w, i) => <li key={i} className="audit-warning-item">{w}</li>)}</ul>
+              }
+            </div>
+
+            {analysis.raw_model_data?.validation_issues?.length > 0 && (
+              <div className="card">
+                <div className="card-title"><AlertTriangle size={14} style={{ color: "#eab308" }} /> Model Validation Issues</div>
+                <ul className="audit-list">
+                  {analysis.raw_model_data.validation_issues.map((v, i) => (
+                    <li key={i} className="audit-warning-item">{v}</li>
                   ))}
                 </ul>
-              )}
-            </section>
+              </div>
+            )}
           </div>
         )}
 
-        <section className="card system-status">
-          <h2>System Logs</h2>
-          <p className="message-box">{message}</p>
-          {analysis && <button onClick={downloadJson}>Download Audited JSON</button>}
-        </section>
+        {/* ── TAB: Risk Vectors ───────────────────────────────────── */}
+        {activeTab === "vectors" && analysis && (
+          <div className="tab-content animate-in">
+            <div className="card">
+              <div className="card-title"><ShieldAlert size={14} /> Risk Vectors</div>
+              <p className="hint">Authorization-driven attack paths from entry subjects to critical objects:</p>
+              {(!analysis.attack_paths || analysis.attack_paths.length === 0)
+                ? <EmptyState icon={CheckCircle} message="No risk vectors found." />
+                : (
+                  <div className="paths-list">
+                    {analysis.attack_paths.map((path, idx) => (
+                      <div
+                        key={idx}
+                        className={`path-item ${activePathIndex === idx ? "selected" : ""}`}
+                        onClick={() => { clearBlast(); setActivePathIndex(activePathIndex === idx ? -1 : idx); }}
+                      >
+                        <div className="path-meta">
+                          <span className="path-idx">Vector #{idx + 1}</span>
+                          <span className="path-risk">Risk: {path.overall_risk}</span>
+                        </div>
+                        <div className="path-details">
+                          <span>Impact: {path.impact_score}</span>
+                          <span>Likelihood: {Math.round(path.likelihood_score * 100)}%</span>
+                        </div>
+                        <div className="path-chain">{path.path.join(" → ")}</div>
+                      </div>
+                    ))}
+                  </div>
+                )
+              }
+            </div>
+
+            {activePathIndex >= 0 && analysis.attack_paths?.[activePathIndex] && (
+              <div className="card narrative-card animate-in">
+                <div className="card-title"><Activity size={14} /> Analyst Narrative</div>
+                <div className="narrative-body">
+                  {analysis.attack_paths[activePathIndex].narrative.split("\n\n").map((p, i) => <p key={i}>{p}</p>)}
+                  {analysis.attack_paths[activePathIndex].realism_warnings?.length > 0 && (
+                    <div className="realism-box">
+                      <strong>Architecture Warnings:</strong>
+                      <ul>{analysis.attack_paths[activePathIndex].realism_warnings.map((w, i) => <li key={i}>{w}</li>)}</ul>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── TAB: Impact Analysis ────────────────────────────────── */}
+        {activeTab === "impact" && analysis && (
+          <div className="tab-content animate-in">
+            <div className="card">
+              <div className="card-title"><Zap size={14} /> Compromise Blast Radius</div>
+              {!blastNode
+                ? <div className="blast-empty"><Terminal size={28} /><p>Click the <strong>Impact</strong> button on any node in the graph to compute its blast radius.</p></div>
+                : (
+                  <>
+                    <div className="blast-header">
+                      <span className="blast-node-name">{blastNode}</span>
+                      <button className="btn btn-ghost" onClick={clearBlast}>Clear</button>
+                    </div>
+                    {blastReport && (
+                      <>
+                        <div className="blast-stats">
+                          <div className="blast-stat">
+                            <span className="num">{blastReport.operational_summary.total_assets_exposed}</span>
+                            <span className="lbl">Assets Exposed</span>
+                          </div>
+                          <div className="blast-stat">
+                            <span className="num">{blastReport.operational_summary.critical_assets_exposed}</span>
+                            <span className="lbl">Critical Cyber</span>
+                          </div>
+                          <div className="blast-stat">
+                            <span className="num">{blastReport.operational_summary.physical_processes_exposed}</span>
+                            <span className="lbl">Physics Lost</span>
+                          </div>
+                        </div>
+                        {blastReport.exposed_entities?.critical_assets?.length > 0 && (
+                          <div className="blast-list">
+                            <h4>Exposed Critical Cyber:</h4>
+                            <ul>{blastReport.exposed_entities.critical_assets.map((a, i) => <li key={i}>{a}</li>)}</ul>
+                          </div>
+                        )}
+                        {blastReport.exposed_entities?.physical_processes?.length > 0 && (
+                          <div className="blast-list" style={{ marginTop: 8 }}>
+                            <h4>Compromised Physical:</h4>
+                            <ul>{blastReport.exposed_entities.physical_processes.map((p, i) => <li key={i}>{p}</li>)}</ul>
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </>
+                )
+              }
+            </div>
+
+            <div className="card">
+              <div className="card-title"><GitBranch size={14} /> Cyber-Physical Exposure Vectors</div>
+              {(!analysis.reachability_data?.cyber_physical_vectors?.length)
+                ? <p className="audit-ok"><CheckCircle size={12} /> No direct cyber-physical exposure paths.</p>
+                : (
+                  <ul className="vector-list">
+                    {analysis.reachability_data.cyber_physical_vectors.map((v, i) => (
+                      <li key={i} className="vector-item">
+                        <div className="vec-title">{v.source} → {v.target}</div>
+                        <div className="vec-meta"><span>Confidence: {v.confidence}</span><span>{v.path_length} hops</span></div>
+                        <div className="vec-summary">{v.explanation?.summary}</div>
+                      </li>
+                    ))}
+                  </ul>
+                )
+              }
+            </div>
+          </div>
+        )}
+
+        {/* ── TAB: RBAC Summary ───────────────────────────────────── */}
+        {activeTab === "rbac" && analysis && (
+          <div className="tab-content animate-in">
+            <RBACTab
+              rbacSummary={analysis.rbac_summary}
+              permissions={analysis.raw_model_data?.permissions}
+            />
+          </div>
+        )}
+
+        {/* ── TAB: Firewall ───────────────────────────────────────── */}
+        {activeTab === "firewall" && analysis && (
+          <div className="tab-content animate-in">
+            <FirewallTab
+              firewallSummary={analysis.firewall_summary}
+              firewallBlocked={analysis.raw_model_data?.firewall_blocked}
+            />
+          </div>
+        )}
+
+        {/* ── TAB: AASG Model ─────────────────────────────────────── */}
+        {activeTab === "aasg" && analysis && (
+          <div className="tab-content animate-in">
+            <AASGTab aasg={analysis.aasg} />
+          </div>
+        )}
+
+        {/* System Log */}
+        <div className="system-log">
+          <div className="log-header">
+            <span className="log-title">System Log</span>
+            {analysis && (
+              <button className="btn btn-ghost" style={{ padding: "2px 8px", fontSize: "9px" }} onClick={downloadJson}>
+                Export JSON
+              </button>
+            )}
+          </div>
+          <div className="log-text">{message}</div>
+        </div>
       </aside>
 
+      {/* ── Canvas ────────────────────────────────────────────────── */}
       <main className="canvas">
         {analysis && (
-          <div className="canvas-header">
-            <div className="view-selector">
-              <button 
-                className={viewMode === "asset" ? "active" : ""} 
-                onClick={() => setViewMode("asset")}
-              >
-                <Cpu size={16} /> Asset Purdue View
+          <div className="canvas-toolbar">
+            <div className="view-toggle">
+              <button className={viewMode === "asset" ? "active" : ""} onClick={() => setViewMode("asset")}>
+                <Cpu size={13} /> Asset View
               </button>
-              <button 
-                className={viewMode === "zone" ? "active" : ""} 
-                onClick={() => setViewMode("zone")}
-              >
-                <Compass size={16} /> Macro Zone View
+              <button className={viewMode === "zone" ? "active" : ""} onClick={() => setViewMode("zone")}>
+                <Compass size={13} /> Zone View
               </button>
             </div>
-            <div className="view-legend">
-              <span className="legend-hint" style={{ marginRight: 12, borderRight: "1px solid #334155", paddingRight: 12, color: "#94a3b8" }}>
-                💡 Scroll to Pan | Ctrl + Scroll to Zoom
-              </span>
-              <span className="legend-item"><span className="dot red"></span> Critical</span>
-              <span className="legend-item"><span className="dot orange"></span> High</span>
-              <span className="legend-item"><span className="dot blue"></span> Secure Enforcement</span>
+            <div className="canvas-legend">
+              <span className="legend-hint">Scroll: Pan · Ctrl+Scroll: Zoom</span>
+              <div className="legend-sep" />
+              <div className="legend-item"><span className="legend-dot" style={{ background: "var(--crit-critical)" }} />Critical</div>
+              <div className="legend-item"><span className="legend-dot" style={{ background: "var(--crit-high)" }} />High</div>
+              <div className="legend-sep" />
+              <div className="legend-item"><span className="legend-line" style={{ background: "var(--ea-color)" }} />Auth (E<sub>a</sub>)</div>
+              <div className="legend-item"><span className="legend-line" style={{ background: "var(--ec-color)" }} />Comm (E<sub>c</sub>)</div>
             </div>
           </div>
         )}
@@ -970,17 +1010,26 @@ function App() {
           onConnect={onConnect}
           nodeTypes={nodeTypes}
           fitView
-          fitViewOptions={{ minZoom: 0.2, maxZoom: 1.2 }}
-          minZoom={0.1}
-          maxZoom={2}
-          panOnScroll={true}
+          fitViewOptions={{ padding: 0.15, minZoom: 0.1, maxZoom: 1.5 }}
+          minZoom={0.06}
+          maxZoom={2.5}
+          panOnScroll
           panOnScrollMode="free"
           zoomOnScroll={false}
+          defaultEdgeOptions={{
+            type: "smoothstep",
+            animated: false,
+            style: { stroke: "rgba(71,85,105,0.5)", strokeWidth: 1.2 },
+            markerEnd: { type: MarkerType.ArrowClosed, color: "rgba(71,85,105,0.5)", width: 10, height: 10 },
+          }}
         >
-          <Background color="#cbd5e1" gap={16} />
-          <Controls />
-          <MiniMap nodeColor={(n) => typeColors[n.type] || "#ffffff"} />
-          <CustomScrollbars />
+          <Background variant={BackgroundVariant.Dots} color="rgba(30,41,59,0.4)" gap={28} size={1.2} />
+          <Controls showInteractive={false} />
+          <MiniMap
+            nodeColor={(n) => typeColors[n.data?.type || n.type] || "#0d1c34"}
+            maskColor="rgba(3,8,16,0.75)"
+            style={{ background: "rgba(5,13,26,0.9)" }}
+          />
         </ReactFlow>
       </main>
     </div>
