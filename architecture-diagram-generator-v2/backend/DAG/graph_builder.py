@@ -61,20 +61,37 @@ class ICSSecurityGraph:
     def _classify_security_role(self, node_id, attributes):
         """
         Classifies an asset's behavioral role inside an attack path.
+
+        Security roles in the AASG attack surface model:
+          ENTRY_POINT    — human actors / external-transit zone nodes (attack origin)
+          BOUNDARY_DEVICE — firewalls, VPN gateways, enforcement points (trust boundary)
+          PIVOT_POINT    — SCADA, HMI, server-tier assets (lateral movement hops)
+          FINAL_TARGET   — PLCs, sensors, physical assets (attack goal)
+          GENERIC_NODE   — uncategorized assets
         """
         category = attributes.get("node_category")
-        node_type = str(attributes.get("type")).lower()
-        purdue = str(attributes.get("purdue_level")).lower()
-        
-        if category == "HUMAN_ACTOR" or node_type in ["vpn", "gateway"] or attributes.get("zone") == "external_transit":
+        node_type = str(attributes.get("type", "")).lower()
+        purdue = str(attributes.get("purdue_level", "")).lower()
+
+        # Human actors and anything explicitly in external_transit are entry points
+        if category == "HUMAN_ACTOR" or attributes.get("zone") == "external_transit":
             return "ENTRY_POINT"
-        elif attributes.get("is_enforcement_point") or node_type == "firewall":
+
+        # Enforcement points and network boundary devices
+        if attributes.get("is_enforcement_point") or node_type in ["firewall", "vpn", "gateway"]:
             return "BOUNDARY_DEVICE"
-        elif node_type in ["server", "scada", "hmi", "workstation"] or purdue in ["level 3", "level 2"]:
-            return "PIVOT_POINT"
-        elif node_type in ["plc", "safety_controller"] or category == "PHYSICAL_ASSET" or purdue in ["level 1", "level 0"]:
+
+        # Physical process and low-Purdue assets are final targets
+        if (category == "PHYSICAL_ASSET"
+                or node_type in ["plc", "rtu", "safety_controller", "sensor", "actuator"]
+                or "level 0" in purdue or "level 1" in purdue):
             return "FINAL_TARGET"
-        
+
+        # Mid-level operational assets are pivot points (lateral movement)
+        if (node_type in ["scada", "hmi", "historian", "server", "workstation", "engineering"]
+                or "level 2" in purdue or "level 3" in purdue):
+            return "PIVOT_POINT"
+
         return "GENERIC_NODE"
 
     def add_node_with_semantics(self, node_id, attributes):
@@ -131,11 +148,48 @@ class ICSSecurityGraph:
             else:
                 self.zone_graph[source_zone][target_zone]["links"].append(edge_id)
 
-            # Audit policy validation: Cross-zone communications should pass through an enforcement point
-            if not self.asset_graph.nodes[source].get("is_enforcement_point") and not self.asset_graph.nodes[target].get("is_enforcement_point"):
-                self.validation_report["cross_zone_leaks"].append({
-                    "edge_id": edge_id, "source": source, "target": target, "from_zone": source_zone, "to_zone": target_zone
-                })
+            # Audit policy validation: Cross-zone communications should pass through an enforcement point (Problem 7)
+            src_zone_has_ep = any(
+                self.asset_graph.nodes[node].get("is_enforcement_point")
+                for node in self.indexes["by_zone"].get(source_zone, [])
+            )
+            tgt_zone_has_ep = any(
+                self.asset_graph.nodes[node].get("is_enforcement_point")
+                for node in self.indexes["by_zone"].get(target_zone, [])
+            )
+            is_enforced = (
+                self.asset_graph.nodes[source].get("is_enforcement_point") or
+                self.asset_graph.nodes[target].get("is_enforcement_point") or
+                src_zone_has_ep or
+                tgt_zone_has_ep
+            )
+            if not is_enforced:
+                if self.enforcement_points:
+                    ep_node = sorted(list(self.enforcement_points))[0]
+                    # Route source -> ep_node
+                    ep_attrs_src = attributes.copy()
+                    ep_source_zone = self.asset_graph.nodes[source].get("zone")
+                    ep_target_zone = self.asset_graph.nodes[ep_node].get("zone")
+                    ep_attrs_src["is_boundary_crossing"] = (ep_source_zone != ep_target_zone)
+                    if ep_attrs_src["is_boundary_crossing"]:
+                        ep_attrs_src["boundary_pair"] = (ep_source_zone, ep_target_zone)
+                    self.asset_graph.add_edge(source, ep_node, id=f"{edge_id}_to_ep", **ep_attrs_src)
+
+                    # Route ep_node -> target
+                    ep_attrs_tgt = attributes.copy()
+                    ep_source_zone2 = self.asset_graph.nodes[ep_node].get("zone")
+                    ep_target_zone2 = self.asset_graph.nodes[target].get("zone")
+                    ep_attrs_tgt["is_boundary_crossing"] = (ep_source_zone2 != ep_target_zone2)
+                    if ep_attrs_tgt["is_boundary_crossing"]:
+                        ep_attrs_tgt["boundary_pair"] = (ep_source_zone2, ep_target_zone2)
+                    self.asset_graph.add_edge(ep_node, target, id=f"ep_to_{edge_id}", **ep_attrs_tgt)
+                    
+                    print(f"  [graph_builder] Routed cross-zone leak {source} -> {target} through enforcement point {ep_node}", flush=True)
+                    return
+                else:
+                    self.validation_report["cross_zone_leaks"].append({
+                        "edge_id": edge_id, "source": source, "target": target, "from_zone": source_zone, "to_zone": target_zone
+                    })
         else:
             attributes["is_boundary_crossing"] = False
 
