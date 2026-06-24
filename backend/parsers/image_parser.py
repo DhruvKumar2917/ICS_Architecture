@@ -369,7 +369,7 @@ def _print_graph_summary(graph: Dict[str, Any]) -> None:
     if unknown_proto > 0:
         print(f"  WARNING: {unknown_proto}/{n(conns)} connections have unknown protocol", flush=True)
     else:
-        print(f"  Protocol quality: All connections have named protocols ✓", flush=True)
+        print(f"  Protocol quality: All connections have named protocols [OK]", flush=True)
     print(flush=True)
 
 

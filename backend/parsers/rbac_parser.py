@@ -11,7 +11,7 @@ STRICT RULE: Subjects come ONLY from this parser — never from LLM inference on
 Internally, the parser distinguishes between:
   - roles:  named authorization groups  (VendorMaint, OEMOps)
   - users:  individual principals       (if the RBAC file includes them)
-Both are exposed as subjects (S) in the AASG vertex set V = S ∪ O.
+Both are exposed as subjects (S) in the AASG vertex set V = S union O.
 Role provenance is stored as edge metadata on every authorization edge it creates,
 so the reason a permission exists can always be explained.
 
@@ -402,7 +402,7 @@ class RBACParser:
     def parse(self, content: str) -> "RBACParser":
         """Auto-detect format and parse RBAC content."""
         if not content or not content.strip():
-            print("  [rbac_parser] WARNING: empty content — nothing to parse", flush=True)
+            print("  [rbac_parser] WARNING: empty content - nothing to parse", flush=True)
             return self
 
         content = content.strip()

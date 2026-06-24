@@ -223,6 +223,7 @@ class ICSAnalysisDAGBuilder:
                         "extent": "parent",
                         "position": { "x": start_x + (i * HORIZONTAL_NODE_SPACING) - base_x, "y": y_coord - ((zone_bounds[zone_id]["min_layer"] * VERTICAL_SPACING) - ZONE_PADDING) },
                         "data": {
+                            "id": str(node_id),
                             **meta, 
                             **node_attrs,
                             "in_attack_path": node_id in self.attack_nodes 

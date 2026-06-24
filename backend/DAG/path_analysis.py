@@ -47,7 +47,8 @@ class ICSPathAnalyzer:
 
     def _evaluate_path(self, path):
         """
-        Transforms a raw node sequence into a decoupled Impact/Likelihood security finding.
+        Transforms a raw node sequence into a decoupled Impact/Likelihood security finding
+        and enriches it with the research-grade risk score from RiskEngine.
         """
         metrics = {
             "path": path,
@@ -117,12 +118,19 @@ class ICSPathAnalyzer:
                     metrics["realism_warnings"].append(f"Suspicious Architecture Bypass: L{u_p} directly to L{v_p} ({u} ➔ {v})")
 
         # 3. Final Calculations ($Risk = Impact \times Likelihood$)
-        # Ensure path length slightly degrades likelihood (noise, detection probability)
         metrics["likelihood_score"] *= (0.95 ** metrics["length"])
-        
-        metrics["impact_score"] = round(max(impact_accumulator, 10.0), 2) # Minimum impact of 10
+        metrics["impact_score"] = round(max(impact_accumulator, 10.0), 2)
         metrics["likelihood_score"] = round(metrics["likelihood_score"], 3)
-        metrics["overall_risk"] = round(metrics["impact_score"] * metrics["likelihood_score"], 2)
+
+        # Integrate the official RiskEngine score
+        from DAG.risk_engine import RiskEngine
+        engine = RiskEngine(self.ics_graph)
+        risk_rec = engine.score_path(path)
+
+        metrics["overall_risk"] = risk_rec["total_risk_score"]
+        metrics["risk_score"] = risk_rec["total_risk_score"]
+        metrics["severity"] = risk_rec["severity"]
+        metrics["score_breakdown"] = risk_rec["score_breakdown"]
         
         # 4. Generate Analyst Narrative
         metrics["narrative"] = self._generate_narrative(path, metrics)
@@ -132,10 +140,7 @@ class ICSPathAnalyzer:
     def analyze_attack_paths(self, entry_points=None, targets=None, top_n=3, max_depth=8, max_time_sec=5.0):
         """
         Discovers the top N highest-risk paths from entry points to targets.
-        Includes execution time limits and depth limits to prevent exponential explosion.
-
-        Issue 6 fix: returns [] immediately if the graph has no edges (empty/disconnected
-        graph), preventing spurious single-node or zero-length paths.
+        Generates 30 candidates per entry/target pair and prioritizes high-risk paths.
         """
         entries = entry_points or self.ics_graph.entry_points
         critical_targets = targets or self.ics_graph.critical_assets
@@ -159,15 +164,59 @@ class ICSPathAnalyzer:
 
         start_time = time.time()
 
-        # Build communication-only subgraph containing only COMM_LINK edges (Problem 5)
+        # Build combined traversal graph with weights (costs)
+        combined_graph = nx.DiGraph()
+        for u, v, d in self.asset_graph.edges(data=True):
+            edge_type = d.get("edge_type", "")
+            if edge_type in ("HUMAN_PERM", "COMM_LINK", "CYBER_PHYSICAL"):
+                # cost = firewall_strength + zone_crossings + privilege_required
+                cost = 1.0  # Base cost to prefer fewer hops when weights are equal
+                
+                u_attrs = self.asset_graph.nodes[u]
+                v_attrs = self.asset_graph.nodes[v]
+                
+                # 1. Firewall / Enforcement Point (firewall_strength)
+                if v_attrs.get("is_enforcement_point") or str(v_attrs.get("type")).lower() in ("firewall", "vpn", "gateway"):
+                    cost += 30.0
+                
+                # 2. Zone Crossings
+                u_zone = u_attrs.get("zone")
+                v_zone = v_attrs.get("zone")
+                if u_zone and v_zone and u_zone != v_zone:
+                    cost += 15.0
+                    
+                # 3. Privilege / Difficulty Required
+                #    Tie the privilege cost to the sensitivity of the action so
+                #    that high-impact writes/programming cost more to traverse
+                #    than a passive read (a more realistic attacker model).
+                if edge_type == "HUMAN_PERM":
+                    action = str(d.get("label", "")).lower()
+                    _high   = ("write", "program", "modify", "admin", "root", "super", "config", "firmware", "download", "send_command", "stop")
+                    _medium = ("connect", "access", "execute", "upload", "maintenance")
+                    if any(k in action for k in _high):
+                        cost += 18.0   # privileged control action
+                    elif any(k in action for k in _medium):
+                        cost += 10.0   # standard authenticated access
+                    else:
+                        cost += 6.0    # read-only / low-impact
+                
+                # Purdue drop penalty (moving down to target/process layers)
+                u_p = self._parse_purdue_level(u_attrs.get("purdue_level"))
+                v_p = self._parse_purdue_level(v_attrs.get("purdue_level"))
+                if u_p is not None and v_p is not None and u_p > v_p:
+                    cost += 20.0  # Pivot down is more difficult
+                
+                combined_graph.add_edge(u, v, weight=cost, **d)
+
+        # Communication-only subgraph — used to validate cyber node reachability
         comm_graph = nx.DiGraph()
         for u, v, d in self.asset_graph.edges(data=True):
             if d.get("edge_type") == "COMM_LINK":
                 comm_graph.add_edge(u, v)
 
+        path_counter = 0
         for entry in entries:
             for target in critical_targets:
-                # Time limit circuit breaker
                 if time.time() - start_time > max_time_sec:
                     logger.warning("Path analysis hit time limit. Yielding partial results.")
                     break
@@ -177,51 +226,74 @@ class ICSPathAnalyzer:
                     analyzed_paths.extend(self._route_cache[cache_key])
                     continue
 
-                if not nx.has_path(self.asset_graph, entry, target):
+                if not combined_graph.has_node(entry) or not combined_graph.has_node(target):
+                    continue
+
+                if not nx.has_path(combined_graph, entry, target):
                     continue
                 
-                local_paths = []
+                local_candidates = []
                 try:
-                    path_generator = nx.shortest_simple_paths(self.asset_graph, entry, target)
-                    for raw_path in islice(path_generator, top_n):
-                        # Must be at least 2 nodes (1 edge) to be a valid attack path
+                    # Generate a wider set of candidates (up to 30) using cost weights
+                    path_generator = nx.shortest_simple_paths(combined_graph, entry, target, weight='weight')
+                    for raw_path in islice(path_generator, 30):
                         if len(raw_path) < 2:
                             continue
                         if len(raw_path) - 1 > max_depth:
                             continue
                             
-                        # Must contain at least one network communication edge (COMM_LINK)
-                        # to represent realistic network movement/pivoting (Problem 5)
-                        has_comm = False
+                        has_meaningful_edge = False
                         for idx in range(len(raw_path) - 1):
                             u_node, v_node = raw_path[idx], raw_path[idx+1]
-                            if self.asset_graph[u_node][v_node].get("edge_type") == "COMM_LINK":
-                                has_comm = True
-                                break
-                        if not has_comm:
+                            if self.asset_graph.has_edge(u_node, v_node):
+                                et = self.asset_graph[u_node][v_node].get("edge_type", "")
+                                if et in ("COMM_LINK", "HUMAN_PERM", "CYBER_PHYSICAL"):
+                                    has_meaningful_edge = True
+                                    break
+                        if not has_meaningful_edge:
                             continue
 
-                        # Verify communication reachability between adjacent cyber assets in the path (Problem 5)
+                        # Verify communication reachability between adjacent cyber assets
                         is_reachable = True
-                        cyber_nodes = [n for n in raw_path if self.asset_graph.nodes[n].get("node_category") == "CYBER_ASSET"]
+                        cyber_nodes = [
+                            n for n in raw_path
+                            if self.asset_graph.nodes.get(n, {}).get("node_category") == "CYBER_ASSET"
+                        ]
                         for idx in range(len(cyber_nodes) - 1):
                             u_cyber = cyber_nodes[idx]
                             v_cyber = cyber_nodes[idx+1]
-                            if u_cyber != v_cyber and not nx.has_path(comm_graph, u_cyber, v_cyber):
+                            if self.asset_graph.has_edge(u_cyber, v_cyber):
+                                pass
+                            elif (
+                                u_cyber != v_cyber
+                                and comm_graph.has_node(u_cyber)
+                                and comm_graph.has_node(v_cyber)
+                                and not nx.has_path(comm_graph, u_cyber, v_cyber)
+                            ):
                                 is_reachable = False
                                 break
                         if not is_reachable:
                             continue
 
+                        path_counter += 1
                         enriched_path = self._evaluate_path(raw_path)
-                        local_paths.append(enriched_path)
+                        enriched_path["path_id"]    = f"path_{path_counter}"
+                        enriched_path["source"]     = raw_path[0]
+                        enriched_path["target"]     = raw_path[-1]
+                        enriched_path["steps"]      = raw_path
+                        enriched_path["risk_score"] = enriched_path["overall_risk"]
+                        local_candidates.append(enriched_path)
                 except nx.NetworkXNoPath:
                     pass
                 
-                self._route_cache[cache_key] = local_paths
-                analyzed_paths.extend(local_paths)
+                # Sort candidates by overall_risk descending and pick top_n
+                local_candidates.sort(key=lambda x: x["overall_risk"], reverse=True)
+                top_candidates = local_candidates[:top_n]
 
-        # Sort by Overall Risk (Impact * Likelihood) rather than just impact or length
+                self._route_cache[cache_key] = top_candidates
+                analyzed_paths.extend(top_candidates)
+
+        # Sort the overall results by risk descending
         analyzed_paths.sort(key=lambda x: x["overall_risk"], reverse=True)
         return analyzed_paths
 
