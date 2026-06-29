@@ -22,6 +22,12 @@ Full Security Analysis Pipeline:
 from fastapi import FastAPI, File, UploadFile, Body, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pathlib import Path
+import os
+from dotenv import load_dotenv
+
+# Load environment variables from .env file immediately at startup
+load_dotenv(dotenv_path=Path(__file__).parent / ".env", override=True)
+
 import shutil
 import traceback
 import uuid
@@ -259,16 +265,34 @@ def run_security_analysis(unified_data: dict, rbac_summary: dict, firewall_summa
     node_rankings = risk_engine.rank_critical_nodes()
     print(f"[pipeline]   -> Top risk score: {scored_paths[0]['risk_score'] if scored_paths else 0}", flush=True)
 
-    # Step 6: MITRE ATT&CK Mapping
-    print("[pipeline] Step 6: MITRE ATT&CK Mapping...", flush=True)
-    mitre_mapper  = MITREMapper()
-    mitre_results = mitre_mapper.map_aasg(aasg_graph)
-    # Also map each attack path's hops to MITRE techniques
+    # Step 6: MITRE ATT&CK Mapping (LLM-assisted with formal verification)
+    _mapper_mode = os.getenv("MITRE_MAPPER_MODE", "llm").lower()
+    _use_llm = _mapper_mode != "rules"
+    print(f"[pipeline] Step 6: MITRE ATT&CK Mapping (mode={'LLM' if _use_llm else 'rules'})...", flush=True)
+    mitre_mapper = MITREMapper(use_llm=_use_llm)
+    # Extract allowed_pairs from firewall summary for reachability-aware mapping
+    _fw_allowed_pairs = firewall_summary.get("allowed_pairs", [])
+    mitre_results = mitre_mapper.map_aasg_with_context(
+        aasg_graph,
+        ics_graph,
+        firewall_rules=_fw_allowed_pairs,
+    )
+    # Map each attack path's hops with full multi-hop chain context
     for path_rec in scored_paths:
-        path_rec["mitre_hops"] = mitre_mapper.map_attack_path(
+        path_rec["mitre_hops"] = mitre_mapper.map_attack_path_with_context(
             path_rec.get("steps", path_rec.get("path", [])), ics_graph
         )
-    print(f"[pipeline]   -> {len(mitre_results.get('technique_summary', []))} unique MITRE techniques mapped", flush=True)
+    _ctx = mitre_results.get("context_stats", {})
+    _llm_stats = mitre_results.get("llm_stats", {})
+    print(
+        f"[pipeline]   -> {len(mitre_results.get('technique_summary', []))} unique MITRE techniques. "
+        f"Mode: {'LLM' if _use_llm else 'rules'}. "
+        f"Suppressed: {_ctx.get('suppressed', 0)}, "
+        f"Avg confidence: {_ctx.get('avg_confidence', 0):.2f}, "
+        f"Reachability verified: {_ctx.get('reachability_verified', 0)}/{_ctx.get('total_mappings', 0)}"
+        + (f", LLM calls: {_llm_stats.get('llm_calls', 0)}, Cache hits: {_llm_stats.get('cache_hits', 0)}" if _llm_stats else ""),
+        flush=True,
+    )
 
     # Step 7: Blast Radius Analysis
     print("[pipeline] Step 7: Blast Radius Analysis...", flush=True)
@@ -330,6 +354,23 @@ def run_security_analysis(unified_data: dict, rbac_summary: dict, firewall_summa
     # Print comprehensive AASG summary
     _print_aasg_summary(aasg_graph, ics_graph, serialized_validation, scored_paths, unified_data)
 
+    # Print MITRE mapping JSON to stdout for easy CLI copy-paste/inspection
+    import json
+    print("\n" + "="*60, flush=True)
+    print("  MITRE ATT&CK & FORMAL ANALYSIS JSON OUTPUT", flush=True)
+    print("="*60, flush=True)
+    mitre_console_output = {
+        "mitre_mapping": {
+            "technique_summary": mitre_results.get("technique_summary", []),
+            "tactic_summary": mitre_results.get("tactic_summary", {}),
+            "mapping_mode": mitre_results.get("mapping_mode", "llm"),
+            "context_stats": mitre_results.get("context_stats", {})
+        },
+        "formal_analysis": mitre_results.get("formal_analysis", {})
+    }
+    print(json.dumps(mitre_console_output, indent=2), flush=True)
+    print("="*60 + "\n", flush=True)
+
     return {
         # ── Layout ────────────────────────────────────────────────────────
         "react_flow_asset_view":      layout_data["react_flow_asset_view"],
@@ -348,8 +389,11 @@ def run_security_analysis(unified_data: dict, rbac_summary: dict, firewall_summa
             "node_rankings":  node_rankings[:20],  # top 20 risky nodes
         },
 
-        # Step 6: MITRE ATT&CK mapping
+        # Step 6: MITRE ATT&CK mapping (LLM-assisted + formal verification)
         "mitre_mapping": mitre_results,
+
+        # Formal analysis (μ, Θ, ρ)
+        "formal_analysis": mitre_results.get("formal_analysis", {}),
 
         # Step 7: Blast radius
         "blast_radius": blast_radii,
@@ -696,18 +740,29 @@ async def mitre_mapping_endpoint(payload: dict = Body(...)):
         graph_data — unified model dict (raw_model_data from a previous analysis)
     """
     graph_data = payload.get("graph_data", {})
+    mode       = payload.get("mode", os.getenv("MITRE_MAPPER_MODE", "llm")).lower()
     if not graph_data:
         return {"error": "Missing graph_data"}
 
     try:
-        aasg_graph    = AASGGraph(graph_data)
-        mitre_mapper  = MITREMapper()
-        result        = mitre_mapper.map_aasg(aasg_graph)
+        aasg_graph   = AASGGraph(graph_data)
+        ics_graph    = build_graph(graph_data)
+        mitre_mapper = MITREMapper(use_llm=(mode != "rules"))
+        # Use context-aware mapping with graph reachability and firewall verification
+        result = mitre_mapper.map_aasg_with_context(
+            aasg_graph,
+            ics_graph,
+            firewall_rules=[],   # no separate firewall payload in this endpoint
+        )
 
+        _ctx = result.get("context_stats", {})
         print(
-            f"[mitre-mapping] {len(result['authorization_mappings'])} Ea mappings, "
+            f"[mitre-mapping] Mode: {mode}. "
+            f"{len(result['authorization_mappings'])} Ea mappings, "
             f"{len(result['communication_mappings'])} Ec mappings, "
-            f"{len(result['technique_summary'])} unique techniques",
+            f"{len(result['technique_summary'])} unique techniques. "
+            f"Suppressed: {_ctx.get('suppressed', 0)}, "
+            f"Avg confidence: {_ctx.get('avg_confidence', 0):.2f}",
             flush=True,
         )
         return result

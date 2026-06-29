@@ -236,8 +236,10 @@ class RiskEngine:
 
     def _mitre_severity_score(self, path: List[str]) -> Dict[str, Any]:
         """Calculates MITRE severity contribution based on techniques along the path."""
+        # Use the fast, local rule-based mapper for candidate path scoring
+        # to avoid slow LLM API calls during path traversal timeouts.
         from DAG.mitre_mapper import MITREMapper
-        mapper = MITREMapper()
+        mapper = MITREMapper(use_llm=False)
         
         # Map attack path hops to MITRE techniques
         hops = mapper.map_attack_path(path, self.ics_graph)

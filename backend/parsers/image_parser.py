@@ -10,13 +10,27 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 # Load .env from the backend directory
-load_dotenv(dotenv_path=Path(__file__).parent.parent / ".env")
+load_dotenv(dotenv_path=Path(__file__).parent.parent / ".env", override=True)
 
-# Initialize OpenAI client
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
-# Model to use
+# Lazy OpenAI client — only initialized when image parsing is called
+_client = None
 VISION_MODEL = os.getenv("OPENAI_VISION_MODEL", "gpt-4.1")
+
+
+def _get_client() -> "OpenAI":
+    """Return a cached OpenAI client, created on first use."""
+    global _client
+    if _client is None:
+        # Reload explicitly just in case it was saved after the server started
+        load_dotenv(dotenv_path=Path(__file__).parent.parent / ".env", override=True)
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise RuntimeError(
+                "OPENAI_API_KEY environment variable is not set. "
+                "Add it to backend/.env to enable image parsing."
+            )
+        _client = OpenAI(api_key=api_key)
+    return _client
 
 
 def preprocess_image(image_path: str) -> str:
@@ -399,7 +413,7 @@ def image_to_graph(image_path: str, rbac_content: str = "", firewall_content: st
         if firewall_content:
             prompt += f"\n\n### Firewall Rules File:\n{firewall_content}"
 
-        response = client.chat.completions.create(
+        response = _get_client().chat.completions.create(
             model=VISION_MODEL,
             response_format={"type": "json_object"},
             messages=[
