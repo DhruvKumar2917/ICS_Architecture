@@ -36,6 +36,7 @@ from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from parsers.firewall_parser import FirewallParser
+from parsers import ontology
 
 
 # ---------------------------------------------------------------------------
@@ -77,22 +78,30 @@ class Canonicalizer:
         self._alias_map: Dict[str, str] = {}  # raw_slug -> canonical_slug
 
     def register(self, raw_id: str) -> str:
-        """Register an ID and return its canonical slug."""
-        slug = _slug(raw_id)
+        """Register an ID and return its canonical slug.
+
+        Resolution order (most precise first):
+          1. explicit ALIAS / delimiter-folded normalization (ontology)
+          2. previously-seen raw slug
+          3. ontology.resolve_against the existing registry (alias, delimiter,
+             suffix-stem, token-set, then fuzzy >= threshold)
+        """
+        # Step 1: apply the centralized alias / normalization layer.
+        slug = ontology.normalize_identifier(raw_id)
         if not slug or slug == "x":
             return "unknown"
 
         if slug in self._alias_map:
             return self._alias_map[slug]
 
-        # Check for near-duplicate within this set only
-        for known in self._registry:
-            sim = _similarity(slug, known)
-            if sim >= self.SIMILARITY_THRESHOLD:
-                self._alias_map[slug] = known
-                print(f"  [Canonicalizer/{self._label}] merge '{slug}' -> '{known}' (sim={sim:.2f})",
-                      flush=True)
-                return known
+        # Step 3: reconcile against what we've already registered.
+        match = ontology.resolve_against(slug, self._registry.keys(),
+                                         threshold=self.SIMILARITY_THRESHOLD)
+        if match is not None and match != slug:
+            self._alias_map[slug] = match
+            print(f"  [Canonicalizer/{self._label}] merge '{slug}' -> '{match}' "
+                  f"(ontology)", flush=True)
+            return match
 
         # New canonical entry
         self._registry[slug] = slug
@@ -101,8 +110,13 @@ class Canonicalizer:
 
     def resolve(self, raw_id: str) -> str:
         """Resolve a raw ID to its canonical slug."""
-        slug = _slug(raw_id)
-        return self._alias_map.get(slug, slug)
+        slug = ontology.normalize_identifier(raw_id)
+        if slug in self._alias_map:
+            return self._alias_map[slug]
+        # Fall back to ontology reconciliation against the registry.
+        match = ontology.resolve_against(slug, self._registry.keys(),
+                                         threshold=self.SIMILARITY_THRESHOLD)
+        return match if match is not None else slug
 
     def registered(self) -> Set[str]:
         return set(self._registry.keys())
@@ -328,42 +342,13 @@ class UnifiedModel:
         return False
 
     def _resolve_object_alias(self, obj_raw: str) -> Optional[str]:
-        """Resolves an RBAC object name to an existing architecture object ID using aliases and normalization."""
-        obj_slug = _slug(obj_raw)
-        
-        # 1. Explicit aliases map
-        aliases = {
-            "vpn_gw": "customer_vpn",
-            "vpn": "customer_vpn",
-            "hmi_master": "master_hmi",
-            "oemfirewall": "oem_firewall",
-            "vendorfirewall": "vendor_firewall",
-        }
-        if obj_slug in aliases:
-            resolved = aliases[obj_slug]
-            if resolved in self._object_ids:
-                return resolved
+        """Resolve an RBAC object name to an existing architecture object ID.
 
-        # 2. Token-set comparison (e.g. 'hmi_master' and 'master_hmi' have same tokens)
-        obj_tokens = set(obj_slug.split("_")) - {""}
-        for existing_id in self._object_ids:
-            ex_tokens = set(existing_id.split("_")) - {""}
-            if obj_tokens == ex_tokens:
-                return existing_id
-            
-            # Check if all tokens of one are in the other (excluding generic ones)
-            shared = obj_tokens & ex_tokens - {"server", "host", "device", "zone", "network", "system", "gw", "gateway"}
-            if shared:
-                return existing_id
-
-        # 3. Delimiter normalization (strip underscores/dashes and compare)
-        clean_obj = obj_slug.replace("_", "").replace("-", "")
-        for existing_id in self._object_ids:
-            clean_ex = existing_id.replace("_", "").replace("-", "")
-            if clean_obj == clean_ex:
-                return existing_id
-                
-        return None
+        Delegates entirely to the centralized ontology layer (alias map,
+        delimiter folding, suffix-stem and token-set reconciliation, then a
+        fuzzy fallback) so that every parser shares one consistent policy.
+        """
+        return ontology.resolve_against(obj_raw, self._object_ids, threshold=0.88)
 
     def _ingest_subjects(self, subjects: List[Dict]):
         print(f"  [unified] Ingesting {len(subjects)} subjects from RBAC...", flush=True)
@@ -376,7 +361,7 @@ class UnifiedModel:
             if sid not in self._subject_ids:
                 # Rule: No architecture asset should ever appear in S
                 if self._is_architecture_asset(sid):
-                    print(f"  [unified] Subject '{sid}' identified as architecture asset — skipping S ingestion", flush=True)
+                    print(f"  [unified] Subject '{sid}' identified as architecture asset - skipping S ingestion", flush=True)
                     continue
                 self.S.append({
                     "id":   sid,
@@ -479,10 +464,10 @@ class UnifiedModel:
                 })
                 self._object_ids.add(oid)
             else:
-                print(f"  [unified] Object '{oid}' (from '{raw_id}') already registered — skipped",
+                print(f"  [unified] Object '{oid}' (from '{raw_id}') already registered - skipped",
                       flush=True)
 
-        print(f"  [unified] Objects registered: {len(self._object_ids)} — {sorted(self._object_ids)[:10]}",
+        print(f"  [unified] Objects registered: {len(self._object_ids)} - {sorted(self._object_ids)[:10]}",
               flush=True)
 
     # ------------------------------------------------------------------ #
@@ -705,6 +690,23 @@ class UnifiedModel:
                       flush=True)
                 fw_port = conn.get("port", None)
 
+            # --- Protocol inference (ontology) ----------------------------
+            # If neither the diagram nor the firewall supplied a usable
+            # protocol, infer the conventional ICS/OT protocol from the
+            # (source_type, target_type) device pair so the edge — and the
+            # downstream MITRE mapping — is never left as "unknown".
+            proto_norm = str(proto or "").strip().lower()
+            proto_inferred = False
+            if proto_norm in ("", "unknown", "any", "network_traffic"):
+                src_type = next((o["type"] for o in self.O if o["id"] == src_id), "unknown")
+                dst_type = next((o["type"] for o in self.O if o["id"] == dst_id), "unknown")
+                guess = ontology.infer_protocol(src_type, dst_type, src_id, dst_id)
+                if guess:
+                    proto = guess
+                    proto_inferred = True
+                    print(f"  [unified] Inferred protocol for {src_id} -> {dst_id}: "
+                          f"{guess} (from {src_type or '?'}<->{dst_type or '?'})", flush=True)
+
             self.Ec.append({
                 "id":       f"ec_{i}",
                 "source":   src_id,
@@ -713,6 +715,7 @@ class UnifiedModel:
                 "label": {
                     "sm":              "c",
                     "protocol":        proto or "unknown",
+                    "protocol_inferred": proto_inferred,
                     "port":            fw_port,
                     "source_zone":     src_zone,
                     "target_zone":     dst_zone,
@@ -771,7 +774,7 @@ class UnifiedModel:
           zones -> objects -> subjects -> actions -> permissions -> connections
         """
         print("\n" + "="*55, flush=True)
-        print("  UNIFIED MODEL BUILD — Stage-by-Stage Debug", flush=True)
+        print("  UNIFIED MODEL BUILD - Stage-by-Stage Debug", flush=True)
         print("="*55, flush=True)
 
         # 1. Extract raw containers

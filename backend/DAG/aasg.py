@@ -1,14 +1,14 @@
 """
-Authorization Attack Surface Graph (AASG) — Formal G = (V, E, Z).
+Authorization Attack Surface Graph (AASG) - Formal G = (V, E, Z).
 
 Strictly conforms to the professor's mathematical definition:
 
   G = (V, E, Z)  where:
     Z  = set of security zones
-    V  = S ∪ O   (subjects only and objects only — NO action/policy/role nodes)
-    E  = Ea ∪ Ec
-         Ea: authorization edges   (subject → object,  action  as edge label)
-         Ec: communication edges   (object  → object,  protocol as edge label)
+    V  = S union O   (subjects only and objects only - NO action/policy/role nodes)
+    E  = Ea union Ec
+         Ea: authorization edges   (subject -> object,  action  as edge label)
+         Ec: communication edges   (object  -> object,  protocol as edge label)
 
 Edge label schema for every em = (vi, vj):
     lem = ⟨ sm, p(em), tvj, θ(vi), θ(vj) ⟩
@@ -42,7 +42,7 @@ class AASGGraph:
 
     def __init__(self, unified_data: Dict[str, Any]):
         self.Z: List[str]        = []    # Zone IDs
-        self.V: List[Dict]       = []    # Vertices = S ∪ O (subjects and objects only)
+        self.V: List[Dict]       = []    # Vertices = S union O (subjects and objects only)
         self.Ea: List[Dict]      = []    # Authorization edges
         self.Ec: List[Dict]      = []    # Communication edges
         self.R:  List[Dict]      = []    # Action catalogue (metadata, not vertices)
@@ -65,7 +65,7 @@ class AASGGraph:
         return self._type_map.get(vertex_id, "unknown")
 
     def _ensure_vertex(self, vid: str, vertex_type: str, zone: str, asset_type: str = "unknown"):
-        """Add a vertex to V if not already present. V = S ∪ O only."""
+        """Add a vertex to V if not already present. V = S union O only."""
         if not vid or vid in self._vertex_ids:
             return
 
