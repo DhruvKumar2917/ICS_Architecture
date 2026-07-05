@@ -38,6 +38,7 @@ Usage:
     results = mapper.map_aasg_with_context(aasg_graph, ics_graph, firewall_rules)
 """
 
+import json
 import logging
 import os
 import re
@@ -799,10 +800,50 @@ class MITREMapper:
                 **({"formal_analysis": formal_result} if i == len(edge_mappings) - 1 else {}),
             })
 
+        # ── Terminal JSON Output ─────────────────────────────────────
+        path_json = {
+            "path": path,
+            "path_label": chain_label,
+            "total_hops": len(hop_mapping),
+            "hops": [
+                {
+                    "hop": i + 1,
+                    "from": h["from"],
+                    "to": h["to"],
+                    "edge_type": h["edge_type"],
+                    "chain_position": h["chain_position"],
+                    "prerequisites_met": h["prerequisites_met"],
+                    "reachability_verified": h["reachability_verified"],
+                    "mitre": {
+                        "technique_id":    h["mitre"]["id"],
+                        "technique_name":  h["mitre"]["name"],
+                        "tactic":          h["mitre"]["tactic"],
+                        "severity":        h["mitre"]["severity"],
+                        "confidence":      h["mitre"]["technique_confidence"],
+                        "llm_confidence":  h["mitre"]["llm_confidence"],
+                        "url":             h["mitre"]["url"],
+                        "suppressed":      h["mitre"]["suppressed"],
+                        "suppression_reason": h["mitre"]["suppression_reason"],
+                        "llm_reason":      h["mitre"]["llm_reason"],
+                        "real_world_example": h["mitre"]["real_world_example"],
+                        "validation_warnings": h["mitre"]["validation_warnings"],
+                    },
+                    **({"formal_analysis": h["formal_analysis"]} if "formal_analysis" in h else {}),
+                }
+                for i, h in enumerate(hop_mapping)
+            ],
+        }
+        print("\n" + "=" * 70)
+        print(f"[MITREMapper] Attack Path JSON Output")
+        print("=" * 70)
+        print(json.dumps(path_json, indent=2, default=str))
+        print("=" * 70 + "\n")
+
         return hop_mapping
 
     def map_attack_path(self, path: List[str], ics_graph) -> List[Dict]:
         """Backward-compatible mapping function for risk engine."""
+        # map_attack_path_with_context already prints JSON to terminal
         return self.map_attack_path_with_context(path, ics_graph)
 
     # ------------------------------------------------------------------

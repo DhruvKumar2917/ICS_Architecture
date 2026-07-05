@@ -12,7 +12,7 @@ import {
   Shield, Upload, FileText, AlertTriangle, ShieldAlert,
   Cpu, Compass, RefreshCw, Zap, Terminal, Lock,
   Network, UserCheck, GitBranch, Activity, Eye,
-  CheckCircle, XCircle, ChevronRight, Database,
+  CheckCircle, XCircle, ChevronRight, Database, Download,
 } from "lucide-react";
 import "./style.css";
 
@@ -955,6 +955,139 @@ function App() {
     a.click();
   };
 
+  const downloadRiskVectorsJson = () => {
+    if (!analysis?.attack_paths) return;
+    const payload = {
+      export_type: "risk_vectors",
+      exported_at: new Date().toISOString(),
+      total_vectors: analysis.attack_paths.length,
+      risk_vectors: analysis.attack_paths.map((path, idx) => ({
+        vector_index: idx + 1,
+        path: path.path,
+        path_label: path.path.join(" → "),
+        overall_risk: path.overall_risk,
+        risk_score: path.risk_score,
+        impact_score: path.impact_score,
+        likelihood_score: path.likelihood_score,
+        severity: path.severity,
+        narrative: path.narrative,
+        realism_warnings: path.realism_warnings || [],
+        steps: path.steps || [],
+        mitre_hops: (path.mitre_hops || []).map((hop) => ({
+          from: hop.from,
+          to: hop.to,
+          edge_type: hop.edge_type,
+          chain_position: hop.chain_position,
+          prerequisites_met: hop.prerequisites_met,
+          reachability_verified: hop.reachability_verified,
+          mitre: hop.mitre ? {
+            technique_id: hop.mitre.id,
+            technique_name: hop.mitre.name,
+            tactic: hop.mitre.tactic,
+            severity: hop.mitre.severity,
+            confidence: hop.mitre.technique_confidence,
+            llm_confidence: hop.mitre.llm_confidence,
+            url: hop.mitre.url,
+            llm_reason: hop.mitre.llm_reason,
+            real_world_example: hop.mitre.real_world_example,
+            suppressed: hop.mitre.suppressed,
+            suppression_reason: hop.mitre.suppression_reason,
+          } : null,
+          ...(hop.formal_analysis ? { formal_analysis: hop.formal_analysis } : {}),
+        })),
+      })),
+      node_rankings: analysis.risk_analysis?.node_rankings || [],
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "ics-risk-vectors.json";
+    a.click();
+  };
+
+  const downloadMitreJson = () => {
+    if (!analysis?.mitre_mapping) return;
+    const mitre = analysis.mitre_mapping;
+    const payload = {
+      export_type: "mitre_attack_ics_mapping",
+      exported_at: new Date().toISOString(),
+      mapping_mode: mitre.mapping_mode || "llm",
+      context_aware: mitre.context_aware || false,
+      context_stats: mitre.context_stats || {},
+      llm_stats: mitre.llm_stats || {},
+      tactic_summary: mitre.tactic_summary || {},
+      technique_summary: (mitre.technique_summary || []).map((tech) => ({
+        technique_id: tech.id,
+        technique_name: tech.name,
+        tactic: tech.tactic,
+        severity: tech.severity,
+        url: tech.url,
+        real_world_example: tech.real_world_example || "",
+        occurrence_count: tech.count,
+        suppressed_count: tech.suppressed_count || 0,
+        avg_confidence: tech.avg_confidence,
+        reachability_verified_count: tech.reachability_verified_count || 0,
+        firewall_verified_count: tech.firewall_verified_count || 0,
+      })),
+      authorization_mappings: (mitre.authorization_mappings || []).map((m) => ({
+        edge_id: m.edge_id,
+        subject: m.subject,
+        action: m.action,
+        object: m.object,
+        source_zone: m.source_zone,
+        target_zone: m.target_zone,
+        mitre: {
+          technique_id: m.mitre?.id,
+          technique_name: m.mitre?.name,
+          tactic: m.mitre?.tactic,
+          severity: m.mitre?.severity,
+          confidence: m.mitre?.technique_confidence,
+          llm_confidence: m.mitre?.llm_confidence,
+          url: m.mitre?.url,
+          llm_reason: m.mitre?.llm_reason,
+          real_world_example: m.mitre?.real_world_example,
+          reachability_verified: m.mitre?.reachability_verified,
+          firewall_verified: m.mitre?.firewall_verified,
+          comm_edge_exists: m.mitre?.comm_edge_exists,
+          suppressed: m.mitre?.suppressed,
+          suppression_reason: m.mitre?.suppression_reason,
+          validation_warnings: m.mitre?.validation_warnings || [],
+        },
+      })),
+      communication_mappings: (mitre.communication_mappings || []).map((m) => ({
+        edge_id: m.edge_id,
+        source: m.source,
+        target: m.target,
+        protocol: m.protocol,
+        source_zone: m.source_zone,
+        target_zone: m.target_zone,
+        mitre: {
+          technique_id: m.mitre?.id,
+          technique_name: m.mitre?.name,
+          tactic: m.mitre?.tactic,
+          severity: m.mitre?.severity,
+          confidence: m.mitre?.technique_confidence,
+          llm_confidence: m.mitre?.llm_confidence,
+          url: m.mitre?.url,
+          llm_reason: m.mitre?.llm_reason,
+          real_world_example: m.mitre?.real_world_example,
+          reachability_verified: m.mitre?.reachability_verified,
+          firewall_verified: m.mitre?.firewall_verified,
+          comm_edge_exists: m.mitre?.comm_edge_exists,
+          suppressed: m.mitre?.suppressed,
+          suppression_reason: m.mitre?.suppression_reason,
+          validation_warnings: m.mitre?.validation_warnings || [],
+        },
+      })),
+      formal_analysis: analysis.formal_analysis || mitre.formal_analysis || {},
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "ics-mitre-mapping.json";
+    a.click();
+  };
+
   // ---------------------------------------------------------------------------
   // UI helpers
   // ---------------------------------------------------------------------------
@@ -1154,7 +1287,14 @@ function App() {
         {activeTab === "vectors" && analysis && (
           <div className="tab-content animate-in">
             <div className="card">
-              <div className="card-title"><ShieldAlert size={14} /> Risk Vectors</div>
+              <div className="card-title" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span style={{ display: "flex", alignItems: "center", gap: 5 }}><ShieldAlert size={14} /> Risk Vectors</span>
+                {analysis.attack_paths?.length > 0 && (
+                  <button className="btn btn-ghost" style={{ padding: "3px 8px", fontSize: "9px", display: "flex", alignItems: "center", gap: 3 }} onClick={downloadRiskVectorsJson}>
+                    <Download size={10} /> Download JSON
+                  </button>
+                )}
+              </div>
               <p className="hint">Authorization-driven attack paths from entry subjects to critical objects:</p>
               {(!analysis.attack_paths || analysis.attack_paths.length === 0)
                 ? <EmptyState icon={CheckCircle} message="No risk vectors found." />
@@ -1311,12 +1451,41 @@ function App() {
         {activeTab === "mitre" && analysis && (
           <div className="tab-content animate-in">
             <div className="card">
-              <div className="card-title"><Shield size={14} /> MITRE ATT&CK for ICS Mapping</div>
+              <div className="card-title" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span style={{ display: "flex", alignItems: "center", gap: 5 }}><Shield size={14} /> MITRE ATT&CK for ICS Mapping</span>
+                {analysis.mitre_mapping?.technique_summary?.length > 0 && (
+                  <button className="btn btn-ghost" style={{ padding: "3px 8px", fontSize: "9px", display: "flex", alignItems: "center", gap: 3 }} onClick={downloadMitreJson}>
+                    <Download size={10} /> Download JSON
+                  </button>
+                )}
+              </div>
               <p className="hint">Identified threat techniques mapped to authorization (Ea) and communication (Ec) edges:</p>
               {(!analysis.mitre_mapping?.technique_summary || analysis.mitre_mapping.technique_summary.length === 0)
                 ? <EmptyState icon={CheckCircle} message="No MITRE mappings found." />
                 : (
                   <>
+                    {/* Context stats summary */}
+                    {analysis.mitre_mapping.context_stats && (
+                      <div className="stat-grid" style={{ marginBottom: 10 }}>
+                        <div className="stat-cell">
+                          <span className="stat-val" style={{ color: "var(--text-primary)" }}>{analysis.mitre_mapping.context_stats.total_mappings || 0}</span>
+                          <span className="stat-label">Total Mappings</span>
+                        </div>
+                        <div className="stat-cell">
+                          <span className="stat-val" style={{ color: "var(--accent-bright)" }}>{analysis.mitre_mapping.technique_summary.length}</span>
+                          <span className="stat-label">Techniques</span>
+                        </div>
+                        <div className="stat-cell">
+                          <span className="stat-val">{analysis.mitre_mapping.context_stats.reachability_verified || 0}</span>
+                          <span className="stat-label">Reach Verified</span>
+                        </div>
+                        <div className="stat-cell">
+                          <span className="stat-val">{analysis.mitre_mapping.context_stats.suppressed || 0}</span>
+                          <span className="stat-label">Suppressed</span>
+                        </div>
+                      </div>
+                    )}
+
                     {/* Tactics breakdown */}
                     {analysis.mitre_mapping.tactic_summary && (
                       <div className="tactic-summary-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 5, marginBottom: 10 }}>
@@ -1344,6 +1513,11 @@ function App() {
                               Mitre Spec <ChevronRight size={10} />
                             </a>
                           </div>
+                          {tech.real_world_example && (
+                            <div style={{ fontSize: 9, color: "var(--text-muted)", marginTop: 4, fontStyle: "italic", borderTop: "1px solid var(--border-subtle)", paddingTop: 4 }}>
+                              ⚠ {tech.real_world_example}
+                            </div>
+                          )}
                         </div>
                       ))}
                     </div>
