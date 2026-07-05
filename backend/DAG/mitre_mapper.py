@@ -108,6 +108,31 @@ REAL_WORLD_EXAMPLES: Dict[str, str] = {
     "T0864": "Multiple APTs — used lateral movement via remote services in OT networks",
 }
 
+# Canonical technique metadata for frequently used ICS IDs.
+# This prevents ID/name/tactic drift across LLM responses.
+CANONICAL_TECHNIQUES: Dict[str, Dict[str, str]] = {
+    "T0801": {"name": "Monitor Process State", "tactic": "Collection"},
+    "T0812": {"name": "Default Credentials", "tactic": "Initial Access"},
+    "T0814": {"name": "Modify Firewall", "tactic": "Evasion"},
+    "T0816": {"name": "Device Restart/Shutdown", "tactic": "Inhibit Response Function"},
+    "T0831": {"name": "Modify Controller Tasking", "tactic": "Impair Process Control"},
+    "T0834": {"name": "Native API", "tactic": "Execution"},
+    "T0836": {"name": "Modify Parameter", "tactic": "Impair Process Control"},
+    "T0847": {"name": "Unauthorized Command Message", "tactic": "Impair Process Control"},
+    "T0853": {"name": "Scripting", "tactic": "Execution"},
+    "T0856": {"name": "Spoof Reporting Message", "tactic": "Impair Process Control"},
+    "T0857": {"name": "System Firmware", "tactic": "Persistence"},
+    "T0859": {"name": "Valid Accounts", "tactic": "Lateral Movement"},
+    "T0866": {"name": "Remote Services", "tactic": "Initial Access"},
+    "T0869": {"name": "Standard Application Layer Protocol", "tactic": "Command and Control"},
+    "T0877": {"name": "I/O Image", "tactic": "Collection"},
+    "T0880": {"name": "Network Denial of Service", "tactic": "Impact"},
+    "T0881": {"name": "Service Stop", "tactic": "Inhibit Response Function"},
+    "T0884": {"name": "Network Connection Enumeration", "tactic": "Discovery"},
+    "T0886": {"name": "Modify Account", "tactic": "Persistence"},
+    "T0887": {"name": "Remote System Discovery", "tactic": "Discovery"},
+}
+
 
 # ---------------------------------------------------------------------------
 # Minimal Rule-Based Mapper (fallback for experiments)
@@ -266,14 +291,31 @@ class GraphReachabilityValidator:
         except nx.NetworkXError:
             return False
 
-    def firewall_allows(self, src: str, tgt: str, protocol: str = "any") -> bool:
+    def firewall_allows(
+        self,
+        src: str,
+        tgt: str,
+        protocol: str = "any",
+        src_zone: Optional[str] = None,
+        tgt_zone: Optional[str] = None,
+    ) -> bool:
         """Return True if the firewall permits the (src, dst, protocol) flow."""
         if not self._fw_allowed:
             return True   # no firewall data → assume permissive
         s = self._slug(src)
         d = self._slug(tgt)
         p = self._slug(protocol)
-        return (s, d, p) in self._fw_allowed or (s, d, "any") in self._fw_allowed
+        if (s, d, p) in self._fw_allowed or (s, d, "any") in self._fw_allowed:
+            return True
+
+        # Firewall rules are often zone-scoped while mappings are node-scoped.
+        if src_zone and tgt_zone:
+            zs = self._slug(src_zone)
+            zd = self._slug(tgt_zone)
+            if (zs, zd, p) in self._fw_allowed or (zs, zd, "any") in self._fw_allowed:
+                return True
+
+        return False
 
     def get_node_type(self, node_id: str) -> str:
         """Return the ``type`` attribute of a graph node, or 'unknown'."""
@@ -401,6 +443,206 @@ class MITREMapper:
         else:
             self._llm_mapper = None
         self._rule_mapper = _RuleBasedMapper()
+        self._id_name_registry: Dict[str, str] = {
+            tid: meta["name"] for tid, meta in CANONICAL_TECHNIQUES.items()
+        }
+        self._id_tactic_registry: Dict[str, str] = {
+            tid: meta["tactic"] for tid, meta in CANONICAL_TECHNIQUES.items()
+        }
+
+    @staticmethod
+    def _is_generic_remote(mapping: Dict[str, Any]) -> bool:
+        return str(mapping.get("technique_id", "")).upper() in {"T0866", "T0812", "T0881"}
+
+    def _reconcile_with_rule_baseline(self, context: Dict[str, Any], mapping: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Reconcile noisy LLM output using deterministic rules for high-signal cases.
+        This improves consistency when LLM overuses generic remote-service techniques.
+        """
+        mapping = dict(mapping or {})
+        warnings = list(mapping.get("validation_warnings", []))
+
+        baseline = self._rule_mapper.map_edge(context)
+        baseline = self._canonicalize_mapping(baseline)
+
+        action = str(context.get("action", "")).lower().replace("-", "_").replace(" ", "_")
+        protocol = str(context.get("protocol", "")).lower().replace("-", "_").replace(" ", "_")
+        llm_conf = float(mapping.get("adjusted_confidence", mapping.get("confidence", 0.0)))
+
+        strong_action = action in {
+            "modify_firewall", "send_command", "issue_command", "update_config",
+            "manage_accounts", "modify_vpn", "read_diagnostics", "monitor"
+        }
+        strong_protocol = protocol in {"modbus", "modbus_tcp", "opc", "opc_ua", "dnp3", "s7comm"}
+
+        should_override = False
+        if mapping.get("validated") is False:
+            should_override = True
+        elif self._is_generic_remote(mapping) and (strong_action or strong_protocol):
+            should_override = True
+        elif llm_conf < 0.45 and baseline.get("technique_id") != mapping.get("technique_id"):
+            should_override = True
+
+        if should_override:
+            warnings.append(
+                f"Reconciled LLM mapping to rule baseline: {mapping.get('technique_id')} -> {baseline.get('technique_id')}"
+            )
+            # Keep LLM reason for traceability while enforcing deterministic identity.
+            merged = dict(mapping)
+            merged["technique_id"] = baseline.get("technique_id", mapping.get("technique_id"))
+            merged["technique_name"] = baseline.get("technique_name", mapping.get("technique_name"))
+            merged["tactic"] = baseline.get("tactic", mapping.get("tactic"))
+            merged["validated"] = True
+            merged["adjusted_confidence"] = round(max(llm_conf, float(baseline.get("adjusted_confidence", 0.5))), 2)
+            merged["validation_warnings"] = warnings
+            return merged
+
+        if warnings:
+            mapping["validation_warnings"] = warnings
+        return mapping
+
+    def _canonicalize_mapping(self, mapping: Dict[str, Any]) -> Dict[str, Any]:
+        """Normalize MITRE identity so each technique ID has a stable name/tactic."""
+        mapping = dict(mapping or {})
+        warnings = list(mapping.get("validation_warnings", []))
+
+        tid = str(mapping.get("technique_id", "")).upper().strip()
+        if not re.match(r"^T\d{4}$", tid):
+            return mapping
+
+        current_name = str(mapping.get("technique_name", "")).strip()
+        current_tactic = str(mapping.get("tactic", "")).strip()
+
+        canonical_name = self._id_name_registry.get(tid) or current_name
+        canonical_tactic = self._id_tactic_registry.get(tid) or current_tactic
+
+        if current_name and canonical_name and current_name.lower() != canonical_name.lower():
+            warnings.append(
+                f"Canonicalized technique_name for {tid}: '{current_name}' -> '{canonical_name}'"
+            )
+        if current_tactic and canonical_tactic and current_tactic != canonical_tactic:
+            warnings.append(
+                f"Canonicalized tactic for {tid}: '{current_tactic}' -> '{canonical_tactic}'"
+            )
+
+        if canonical_name:
+            self._id_name_registry[tid] = canonical_name
+            mapping["technique_name"] = canonical_name
+        if canonical_tactic:
+            self._id_tactic_registry[tid] = canonical_tactic
+            mapping["tactic"] = canonical_tactic
+
+        mapping["technique_id"] = tid
+        if warnings:
+            mapping["validation_warnings"] = warnings
+        return mapping
+
+    @staticmethod
+    def _build_global_formal_snapshot(ea_mappings: List[Dict], ec_mappings: List[Dict]) -> Dict[str, Any]:
+        """
+        Graph-level formal snapshot.
+        Ordering validation is path-specific, so it is marked not applicable here.
+        """
+        mu: Dict[str, List[str]] = {}
+        theta: Set[str] = set()
+        tactic_sequence: List[str] = []
+        mitre_trace: List[Dict[str, Any]] = []
+
+        for i, m in enumerate(ea_mappings):
+            edge_id = m.get("edge_id", "")
+            action = m.get("action", "access")
+            edge_key = edge_id or f"ea:{m.get('subject', '')}->{m.get('object', '')}::{action}::{i}"
+            tid = m.get("mitre", {}).get("id", "")
+            if tid:
+                mu[edge_key] = [tid]
+                theta.add(tid)
+            tactic = m.get("mitre", {}).get("tactic", "Unknown")
+            tactic_sequence.append(tactic)
+            mitre_trace.append({
+                "edge": edge_key,
+                "technique_id": tid,
+                "technique_name": m.get("mitre", {}).get("name", "Unknown"),
+                "tactic": tactic,
+                "confidence": m.get("mitre", {}).get("technique_confidence", 0.5),
+                "reason": m.get("mitre", {}).get("llm_reason", ""),
+            })
+
+        for i, m in enumerate(ec_mappings):
+            edge_id = m.get("edge_id", "")
+            protocol = m.get("protocol", "unknown")
+            edge_key = edge_id or f"ec:{m.get('source', '')}->{m.get('target', '')}::{protocol}::{i}"
+            tid = m.get("mitre", {}).get("id", "")
+            if tid:
+                mu[edge_key] = [tid]
+                theta.add(tid)
+            tactic = m.get("mitre", {}).get("tactic", "Unknown")
+            tactic_sequence.append(tactic)
+            mitre_trace.append({
+                "edge": edge_key,
+                "technique_id": tid,
+                "technique_name": m.get("mitre", {}).get("name", "Unknown"),
+                "tactic": tactic,
+                "confidence": m.get("mitre", {}).get("technique_confidence", 0.5),
+                "reason": m.get("mitre", {}).get("llm_reason", ""),
+            })
+
+        return {
+            "attack_path": [],
+            "mu": mu,
+            "theta": sorted(theta),
+            "tactic_progression": tactic_sequence,
+            "ordering_validation": {
+                "valid": None,
+                "violations": [],
+                "tactic_sequence": [],
+                "note": "not_applicable_graph_level",
+            },
+            "mitre_trace": mitre_trace,
+        }
+
+    @staticmethod
+    def _assess_mapping_quality(all_mappings: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Compute semantic quality checks used by the code-review graph."""
+        if not all_mappings:
+            return {
+                "id_name_conflicts": 0,
+                "reason_keyword_conflicts": 0,
+                "generic_remote_ratio": 0.0,
+                "unique_mapping_ratio": 0.0,
+            }
+
+        by_id: Dict[str, Set[str]] = {}
+        reason_keyword_conflicts = 0
+        generic_remote = 0
+        unique_pairs: Set[str] = set()
+
+        for m in all_mappings:
+            mitre = m.get("mitre", {})
+            tid = str(mitre.get("id", ""))
+            name = str(mitre.get("name", "")).strip().lower()
+            reason = str(mitre.get("llm_reason", "")).lower()
+            edge_sig = f"{m.get('edge_id','')}::{tid}"
+            unique_pairs.add(edge_sig)
+
+            if tid:
+                by_id.setdefault(tid, set()).add(name)
+
+            if tid in {"T0866", "T0812", "T0881"}:
+                generic_remote += 1
+
+            if "modify firewall" in reason and tid not in {"T0814", "T0886"}:
+                reason_keyword_conflicts += 1
+            if "unauthorized command" in reason and tid not in {"T0847", "T0831", "T0836"}:
+                reason_keyword_conflicts += 1
+
+        id_name_conflicts = sum(1 for names in by_id.values() if len({n for n in names if n}) > 1)
+        total = len(all_mappings)
+        return {
+            "id_name_conflicts": id_name_conflicts,
+            "reason_keyword_conflicts": reason_keyword_conflicts,
+            "generic_remote_ratio": round(generic_remote / total, 3),
+            "unique_mapping_ratio": round(len(unique_pairs) / total, 3),
+        }
 
     # ------------------------------------------------------------------
     # Internal: enriched MITRE record builder
@@ -449,6 +691,7 @@ class MITREMapper:
             "suppression_reason":    suppression_reason,
             # ── Validation ───────────────────────────────────────────
             "validation_warnings":  mapping.get("validation_warnings", []),
+            "execution_status":     mapping.get("execution_status", "Successful"),
         }
 
     # ------------------------------------------------------------------
@@ -458,9 +701,11 @@ class MITREMapper:
     def _map_edge(self, context: Dict[str, Any]) -> Dict[str, Any]:
         """Route an edge to the LLM or rule mapper based on mode."""
         if self.use_llm and self._llm_mapper:
-            return self._llm_mapper.map_single_edge(context)
+            raw = self._llm_mapper.map_single_edge(context)
         else:
-            return self._rule_mapper.map_edge(context)
+            raw = self._rule_mapper.map_edge(context)
+        canonical = self._canonicalize_mapping(raw)
+        return self._reconcile_with_rule_baseline(context, canonical)
 
     # ------------------------------------------------------------------
     # Ea (authorization) edge mapping
@@ -500,7 +745,13 @@ class MITREMapper:
             action   = label.get("action", "access")
 
             comm_ok = validator.comm_edge_exists(source, target) or validator.can_reach(source, target)
-            fw_ok   = validator.firewall_allows(source, target, "unknown")
+            fw_ok   = validator.firewall_allows(
+                source,
+                target,
+                "unknown",
+                src_zone=label.get("source_zone", ""),
+                tgt_zone=label.get("target_zone", ""),
+            )
 
             # Suppression
             suppressed = False
@@ -578,7 +829,13 @@ class MITREMapper:
 
             direct_comm = validator.comm_edge_exists(source, target)
             reachable   = direct_comm or validator.can_reach(source, target)
-            fw_ok       = validator.firewall_allows(source, target, protocol)
+            fw_ok       = validator.firewall_allows(
+                source,
+                target,
+                protocol,
+                src_zone=label.get("source_zone", ""),
+                tgt_zone=label.get("target_zone", ""),
+            )
 
             suppressed = False
             suppression_reason = ""
@@ -677,29 +934,43 @@ class MITREMapper:
                 elif edge_type == "CYBER_PHYSICAL":
                     action = "write"
 
+            # Determine preceding and succeeding nodes
+            prev_n = path[i - 1] if i > 0 else "None"
+            next_n = path[i + 2] if i < len(path) - 2 else "None"
+
             # Build a synthetic edge dict for extract_context
             if edge_type == "COMM_LINK":
+                u_zone = asset_graph.nodes.get(u, {}).get("zone", "unknown")
+                v_zone = asset_graph.nodes.get(v, {}).get("zone", "unknown")
                 synth_edge = {
                     "source": u, "target": v,
                     "label": {
                         "protocol": protocol,
                         "destination_type": v_chain["node_type"],
-                        "source_zone": u_chain.get("purdue_level", "unknown"),
-                        "target_zone": v_chain.get("purdue_level", "unknown"),
+                        "source_zone": u_zone,
+                        "target_zone": v_zone,
                     }
                 }
-                ctx = extract_context(synth_edge, "communication", validator, ics_graph)
+                ctx = extract_context(
+                    synth_edge, "communication", validator, ics_graph,
+                    previous_node=prev_n, next_node=next_n
+                )
             else:
+                u_zone = asset_graph.nodes.get(u, {}).get("zone", "unknown")
+                v_zone = asset_graph.nodes.get(v, {}).get("zone", "unknown")
                 synth_edge = {
                     "source": u, "target": v,
                     "label": {
                         "action": action,
                         "destination_type": v_chain["node_type"],
-                        "source_zone": u_chain.get("purdue_level", "unknown"),
-                        "target_zone": v_chain.get("purdue_level", "unknown"),
+                        "source_zone": u_zone,
+                        "target_zone": v_zone,
                     }
                 }
-                ctx = extract_context(synth_edge, "authorization", validator, ics_graph)
+                ctx = extract_context(
+                    synth_edge, "authorization", validator, ics_graph,
+                    previous_node=prev_n, next_node=next_n
+                )
 
             edge_contexts.append(ctx)
             edge_metadata.append({
@@ -715,8 +986,10 @@ class MITREMapper:
             edge_mappings, formal_result = self._llm_mapper.map_attack_path(
                 path, edge_contexts
             )
+            edge_mappings = [self._canonicalize_mapping(m) for m in edge_mappings]
         else:
             edge_mappings = [self._rule_mapper.map_edge(ctx) for ctx in edge_contexts]
+            edge_mappings = [self._canonicalize_mapping(m) for m in edge_mappings]
             formal_result = formal_analysis(path, edge_mappings)
 
         # Build enriched hop records
@@ -732,7 +1005,13 @@ class MITREMapper:
             # Structural checks
             direct_comm = validator.comm_edge_exists(u, v)
             reachable   = direct_comm or validator.can_reach(u, v)
-            fw_ok       = validator.firewall_allows(u, v, edge_contexts[i].get("protocol", "unknown"))
+            fw_ok       = validator.firewall_allows(
+                u,
+                v,
+                edge_contexts[i].get("protocol", "unknown"),
+                src_zone=str(edge_contexts[i].get("source_zone", "")),
+                tgt_zone=str(edge_contexts[i].get("target_zone", "")),
+            )
 
             # Purdue skip detection
             u_purdue = u_chain.get("purdue_level")
@@ -936,39 +1215,15 @@ class MITREMapper:
         reach_verified = sum(1 for m in all_mappings if m["mitre"].get("reachability_verified"))
         fw_verified    = sum(1 for m in all_mappings if m["mitre"].get("firewall_verified"))
 
-        # ── Formal analysis on all edges combined ────────────────────
-        all_edge_mappings = []
-        all_nodes = set()
-        for m in ea_mappings:
-            all_nodes.add(m.get("subject", ""))
-            all_nodes.add(m.get("object", ""))
-            all_edge_mappings.append({
-                "technique_id":   m["mitre"]["id"],
-                "technique_name": m["mitre"]["name"],
-                "tactic":         m["mitre"]["tactic"],
-                "confidence":     m["mitre"]["technique_confidence"],
-                "reason":         m["mitre"].get("llm_reason", ""),
-            })
-        for m in ec_mappings:
-            all_nodes.add(m.get("source", ""))
-            all_nodes.add(m.get("target", ""))
-            all_edge_mappings.append({
-                "technique_id":   m["mitre"]["id"],
-                "technique_name": m["mitre"]["name"],
-                "tactic":         m["mitre"]["tactic"],
-                "confidence":     m["mitre"]["technique_confidence"],
-                "reason":         m["mitre"].get("llm_reason", ""),
-            })
-
-        global_formal = formal_analysis(
-            list(all_nodes),
-            all_edge_mappings,
-        )
+        # Graph-level formal snapshot (not path-order validated).
+        global_formal = self._build_global_formal_snapshot(ea_mappings, ec_mappings)
 
         # ── LLM stats ───────────────────────────────────────────────
         llm_stats = {}
         if self._llm_mapper:
             llm_stats = self._llm_mapper.get_stats()
+
+        quality_checks = self._assess_mapping_quality(all_mappings)
 
         logger.info(
             f"[MITREMapper][{'LLM' if self.use_llm else 'Rules'}] "
@@ -976,7 +1231,8 @@ class MITREMapper:
             f"{len(technique_summary)} techniques. "
             f"Suppressed: {suppressed}. Low-conf: {low_conf}. "
             f"Reach verified: {reach_verified}/{total}. "
-            f"FW verified: {fw_verified}/{total}."
+            f"FW verified: {fw_verified}/{total}. "
+            f"ID-name conflicts: {quality_checks.get('id_name_conflicts', 0)}."
         )
 
         return {
@@ -997,6 +1253,7 @@ class MITREMapper:
                 "avg_confidence":          round(
                     sum(m["mitre"].get("technique_confidence", 0.5) for m in all_mappings) / total, 2
                 ) if total else 0.0,
+                "quality_checks": quality_checks,
             },
             # ── LLM usage stats ──────────────────────────────────────
             "llm_stats": llm_stats,

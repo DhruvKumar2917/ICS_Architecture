@@ -1557,6 +1557,7 @@ input[type="text"]:focus {
   from {
     stroke-dashoffset: 12;
   }
+
   to {
     stroke-dashoffset: 0;
   }
@@ -1704,13 +1705,17 @@ input[type="text"]:focus {
   align-self: flex-start;
   box-shadow: 0 1px 2px rgba(185, 28, 28, 0.05);
 }
+
 /* ---------------------------------------------------------------------------
    Attack-path traversal animation (flowing dashes along highlighted edges)
    Added for: animated attack traversal in the asset graph.
    --------------------------------------------------------------------------- */
 @keyframes edgeFlow {
-  to { stroke-dashoffset: -24; }
+  to {
+    stroke-dashoffset: -24;
+  }
 }
+
 .edge-attack-flow .react-flow__edge-path {
   stroke-dasharray: 8 6;
   animation: edgeFlow 0.7s linear infinite;
@@ -1726,7 +1731,26 @@ input[type="text"]:focus {
   color: #475569;
   padding: 4px 8px;
 }
-.edge-legend .lg { display: inline-flex; align-items: center; gap: 4px; }
-.edge-legend .swatch { width: 14px; height: 0; border-top-width: 2px; border-top-style: solid; display: inline-block; }
-.edge-legend .swatch.ea { border-top-color: #7c3aed; border-top-style: dashed; }
-.edge-legend .swatch.ec { border-top-color: #2563eb; }
+
+.edge-legend .lg {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.edge-legend .swatch {
+  width: 14px;
+  height: 0;
+  border-top-width: 2px;
+  border-top-style: solid;
+  display: inline-block;
+}
+
+.edge-legend .swatch.ea {
+  border-top-color: #7c3aed;
+  border-top-style: dashed;
+}
+
+.edge-legend .swatch.ec {
+  border-top-color: #2563eb;
+}
