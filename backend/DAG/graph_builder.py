@@ -168,6 +168,8 @@ class ICSSecurityGraph:
                     ep_node = sorted(list(self.enforcement_points))[0]
                     # Route source -> ep_node
                     ep_attrs_src = attributes.copy()
+                    ep_attrs_src["is_inferred_routing"] = True
+                    ep_attrs_src["inference_reason"] = "cross_zone_enforcement_interception"
                     ep_source_zone = self.asset_graph.nodes[source].get("zone")
                     ep_target_zone = self.asset_graph.nodes[ep_node].get("zone")
                     ep_attrs_src["is_boundary_crossing"] = (ep_source_zone != ep_target_zone)
@@ -177,6 +179,8 @@ class ICSSecurityGraph:
 
                     # Route ep_node -> target
                     ep_attrs_tgt = attributes.copy()
+                    ep_attrs_tgt["is_inferred_routing"] = True
+                    ep_attrs_tgt["inference_reason"] = "cross_zone_enforcement_interception"
                     ep_source_zone2 = self.asset_graph.nodes[ep_node].get("zone")
                     ep_target_zone2 = self.asset_graph.nodes[target].get("zone")
                     ep_attrs_tgt["is_boundary_crossing"] = (ep_source_zone2 != ep_target_zone2)

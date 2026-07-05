@@ -28,6 +28,9 @@ from dotenv import load_dotenv
 # Load environment variables from .env file immediately at startup
 load_dotenv(dotenv_path=Path(__file__).parent / ".env", override=True)
 
+BACKEND_HOST = os.getenv("BACKEND_HOST", "127.0.0.1")
+BACKEND_PORT = int(os.getenv("BACKEND_PORT", os.getenv("PORT", "7429")))
+
 import shutil
 import traceback
 import uuid
@@ -77,6 +80,17 @@ def home():
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(
+        "main:app",
+        host=BACKEND_HOST,
+        port=BACKEND_PORT,
+        reload=True,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -200,6 +214,153 @@ def _print_aasg_summary(aasg_graph: AASGGraph, ics_graph, validation_report: dic
     print("="*60 + "\n", flush=True)
 
 
+def _build_code_review_graph(
+    unified_data: dict,
+    validation_report: dict,
+    attack_paths: list,
+    scored_paths: list,
+    mitre_results: dict,
+    blast_radii: dict,
+    propagation_results: dict,
+    lateral_report: dict,
+) -> dict:
+    """Build a stage-by-stage pipeline quality graph for quick diagnostics."""
+    nodes = []
+
+    def add_node(node_id: str, label: str, status: str, metrics: dict):
+        nodes.append({"id": node_id, "label": label, "status": status, "metrics": metrics})
+
+    unified_e = unified_data.get("E", {})
+    add_node(
+        "unified",
+        "Unified Model",
+        "ok" if len(unified_data.get("Z", [])) and len(unified_data.get("O", [])) else "fail",
+        {
+            "zones": len(unified_data.get("Z", [])),
+            "subjects": len(unified_data.get("S", [])),
+            "objects": len(unified_data.get("O", [])),
+            "actions": len(unified_data.get("R", [])),
+            "ea": len(unified_e.get("Ea", [])),
+            "ec": len(unified_e.get("Ec", [])),
+            "blocked": len(unified_data.get("firewall_blocked", [])),
+        },
+    )
+
+    warnings = validation_report.get("warnings", [])
+    add_node(
+        "validation",
+        "Graph Validation",
+        "ok" if validation_report.get("is_valid", True) and not warnings else ("warn" if validation_report.get("is_valid", True) else "fail"),
+        {
+            "is_valid": validation_report.get("is_valid", True),
+            "errors": len(validation_report.get("errors", [])),
+            "warnings": len(warnings),
+        },
+    )
+
+    add_node(
+        "paths",
+        "Attack Paths",
+        "ok" if attack_paths else "warn",
+        {
+            "count": len(attack_paths),
+            "top_risk": scored_paths[0]["risk_score"] if scored_paths else 0,
+        },
+    )
+
+    ctx = mitre_results.get("context_stats", {})
+    quality = ctx.get("quality_checks", {})
+    mitre_status = "ok"
+    if not mitre_results.get("technique_summary"):
+        mitre_status = "fail"
+    elif (
+        ctx.get("avg_confidence", 0.0) < 0.45
+        or ctx.get("suppression_rate_pct", 0.0) > 25
+        or quality.get("id_name_conflicts", 0) > 0
+        or quality.get("reason_keyword_conflicts", 0) > 0
+        or quality.get("generic_remote_ratio", 0.0) > 0.6
+    ):
+        mitre_status = "warn"
+
+    add_node(
+        "mitre",
+        "MITRE Mapping",
+        mitre_status,
+        {
+            "mode": mitre_results.get("mapping_mode", "unknown"),
+            "techniques": len(mitre_results.get("technique_summary", [])),
+            "total_mappings": ctx.get("total_mappings", 0),
+            "avg_confidence": ctx.get("avg_confidence", 0.0),
+            "suppressed": ctx.get("suppressed", 0),
+            "firewall_verified": ctx.get("firewall_verified", 0),
+            "id_name_conflicts": quality.get("id_name_conflicts", 0),
+            "reason_keyword_conflicts": quality.get("reason_keyword_conflicts", 0),
+            "generic_remote_ratio": quality.get("generic_remote_ratio", 0.0),
+            "unique_mapping_ratio": quality.get("unique_mapping_ratio", 0.0),
+        },
+    )
+
+    blast_errors = sum(1 for v in blast_radii.values() if isinstance(v, dict) and v.get("error"))
+    if not blast_radii:
+        blast_status = "fail"
+    elif blast_errors == len(blast_radii):
+        blast_status = "fail"
+    elif blast_errors > 0:
+        blast_status = "warn"
+    else:
+        blast_status = "ok"
+
+    add_node(
+        "blast",
+        "Blast Radius",
+        blast_status,
+        {"nodes_analyzed": len(blast_radii), "errors": blast_errors},
+    )
+
+    add_node(
+        "propagation",
+        "Threat Propagation",
+        "ok" if propagation_results else "warn",
+        {"origins": len(propagation_results)},
+    )
+
+    add_node(
+        "lateral",
+        "Lateral Movement",
+        "ok",
+        {
+            "events": lateral_report.get("total_movement_events", 0),
+            "cross_zone": lateral_report.get("cross_zone_count", 0),
+            "privilege_escalation": lateral_report.get("privilege_escalation_count", 0),
+        },
+    )
+
+    edges = [
+        {"from": "unified", "to": "validation"},
+        {"from": "validation", "to": "paths"},
+        {"from": "paths", "to": "mitre"},
+        {"from": "paths", "to": "blast"},
+        {"from": "paths", "to": "propagation"},
+        {"from": "paths", "to": "lateral"},
+    ]
+
+    pipeline_status = "ok"
+    if any(n["status"] == "fail" for n in nodes):
+        pipeline_status = "fail"
+    elif any(n["status"] == "warn" for n in nodes):
+        pipeline_status = "warn"
+
+    return {
+        "nodes": nodes,
+        "edges": edges,
+        "summary": {
+            "pipeline_status": pipeline_status,
+            "failed_stages": [n["id"] for n in nodes if n["status"] == "fail"],
+            "warning_stages": [n["id"] for n in nodes if n["status"] == "warn"],
+        },
+    }
+
+
 def run_security_analysis(unified_data: dict, rbac_summary: dict, firewall_summary: dict, selected_role: str = None) -> dict:
     """
     Execute the full 13-step security analysis pipeline on the unified A={Z,E,S,O,R} model.
@@ -268,20 +429,38 @@ def run_security_analysis(unified_data: dict, rbac_summary: dict, firewall_summa
     # Step 6: MITRE ATT&CK Mapping (LLM-assisted with formal verification)
     _mapper_mode = os.getenv("MITRE_MAPPER_MODE", "llm").lower()
     _use_llm = _mapper_mode != "rules"
-    print(f"[pipeline] Step 6: MITRE ATT&CK Mapping (mode={'LLM' if _use_llm else 'rules'})...", flush=True)
-    mitre_mapper = MITREMapper(use_llm=_use_llm)
-    # Extract allowed_pairs from firewall summary for reachability-aware mapping
     _fw_allowed_pairs = firewall_summary.get("allowed_pairs", [])
-    mitre_results = mitre_mapper.map_aasg_with_context(
-        aasg_graph,
-        ics_graph,
-        firewall_rules=_fw_allowed_pairs,
-    )
-    # Map each attack path's hops with full multi-hop chain context
-    for path_rec in scored_paths:
-        path_rec["mitre_hops"] = mitre_mapper.map_attack_path_with_context(
-            path_rec.get("steps", path_rec.get("path", [])), ics_graph
+    print(f"[pipeline] Step 6: MITRE ATT&CK Mapping (mode={'LLM' if _use_llm else 'rules'})...", flush=True)
+
+    try:
+        mitre_mapper = MITREMapper(use_llm=_use_llm)
+        mitre_results = mitre_mapper.map_aasg_with_context(
+            aasg_graph,
+            ics_graph,
+            firewall_rules=_fw_allowed_pairs,
         )
+        # Map each attack path's hops with full multi-hop chain context
+        for path_rec in scored_paths:
+            path_rec["mitre_hops"] = mitre_mapper.map_attack_path_with_context(
+                path_rec.get("steps", path_rec.get("path", [])), ics_graph
+            )
+    except Exception as e:
+        if _use_llm:
+            print(f"[pipeline] [WARN] MITRE LLM mapping failed ({e}); falling back to rules mode", flush=True)
+            mitre_mapper = MITREMapper(use_llm=False)
+            mitre_results = mitre_mapper.map_aasg_with_context(
+                aasg_graph,
+                ics_graph,
+                firewall_rules=_fw_allowed_pairs,
+            )
+            for path_rec in scored_paths:
+                path_rec["mitre_hops"] = mitre_mapper.map_attack_path_with_context(
+                    path_rec.get("steps", path_rec.get("path", [])), ics_graph
+                )
+            _use_llm = False
+        else:
+            raise
+
     _ctx = mitre_results.get("context_stats", {})
     _llm_stats = mitre_results.get("llm_stats", {})
     print(
@@ -304,7 +483,10 @@ def run_security_analysis(unified_data: dict, rbac_summary: dict, firewall_summa
     ]
     for node_id in priority_nodes:
         try:
-            blast_radii[node_id] = path_analyzer.analyze_blast_radius(node_id)
+            blast_radii[node_id] = path_analyzer.analyze_blast_radius(
+                node_id,
+                allow_human_perm_bypass=False,
+            )
         except Exception as e:
             blast_radii[node_id] = {"error": str(e)}
     print(f"[pipeline]   -> Blast radius computed for {len(blast_radii)} node(s)", flush=True)
@@ -371,6 +553,17 @@ def run_security_analysis(unified_data: dict, rbac_summary: dict, firewall_summa
     print(json.dumps(mitre_console_output, indent=2), flush=True)
     print("="*60 + "\n", flush=True)
 
+    code_review_graph = _build_code_review_graph(
+        unified_data=unified_data,
+        validation_report=serialized_validation,
+        attack_paths=attack_paths,
+        scored_paths=scored_paths,
+        mitre_results=mitre_results,
+        blast_radii=blast_radii,
+        propagation_results=propagation_results,
+        lateral_report=lateral_report,
+    )
+
     return {
         # ── Layout ────────────────────────────────────────────────────────
         "react_flow_asset_view":      layout_data["react_flow_asset_view"],
@@ -419,6 +612,9 @@ def run_security_analysis(unified_data: dict, rbac_summary: dict, firewall_summa
         # ── Source summaries ──────────────────────────────────────────────
         "rbac_summary":     rbac_summary,
         "firewall_summary": firewall_summary,
+
+        # ── Code-review stage graph ───────────────────────────────────────
+        "code_review_graph": code_review_graph,
     }
 
 
@@ -818,4 +1014,4 @@ async def risk_scoring_endpoint(payload: dict = Body(...)):
         }
     except Exception as e:
         traceback.print_exc()
-        return {"error": str(e)}
+        return {"error": str(e)}
