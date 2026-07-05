@@ -16,7 +16,7 @@ import {
 } from "lucide-react";
 import "./style.css";
 
-const API_URL = "http://127.0.0.1:8000";
+const API_URL = "http://127.0.0.1:7429";
 
 // ---------------------------------------------------------------------------
 // Type → minimap colour
@@ -96,7 +96,7 @@ const ICSNode = memo(({ data }) => {
   const isLatEventTarget = data.is_lateral_event_target;
 
   const purdueTheme = getPurdueTheme(purdueLevel);
-  
+
   let customBg = purdueTheme.bg;
   let customBorderColor = purdueTheme.border;
   let glow = "none";
@@ -154,10 +154,10 @@ const ICSNode = memo(({ data }) => {
         (data.risk_score != null) ? `Risk: ${Number(data.risk_score).toFixed(1)}` : null,
         (data._protocols && data._protocols.length) ? `Protocols: ${data._protocols.join(", ")}` : null,
       ].filter(Boolean).join("\n")}
-      style={{ 
-        borderColor: customBorderColor, 
+      style={{
+        borderColor: customBorderColor,
         backgroundColor: customBg,
-        boxShadow: glow, 
+        boxShadow: glow,
         borderWidth: borderWidth
       }}
     >
@@ -551,6 +551,7 @@ function App() {
   const [activePathIndex, setActivePathIndex] = useState(-1);
   const [blastNode, setBlastNode] = useState(null);
   const [blastReport, setBlastReport] = useState(null);
+  const [mitreSubTab, setMitreSubTab] = useState("summary");
 
   // Threat propagation states
   const [activePropNode, setActivePropNode] = useState(null);
@@ -750,14 +751,14 @@ function App() {
             },
           };
         }
-        return { 
-          ...n, 
-          style: { 
-            ...n.style, 
-            opacity: faded ? 0.25 : 1, 
+        return {
+          ...n,
+          style: {
+            ...n.style,
+            opacity: faded ? 0.25 : 1,
             display: isHidden ? "none" : "block",
-            transition: "opacity 0.2s ease" 
-          } 
+            transition: "opacity 0.2s ease"
+          }
         };
       });
     });
@@ -771,9 +772,9 @@ function App() {
       //   CYBER_PHYSICAL (control->process) -> purple-red
       //   COMM_LINK (Ec, communication)   -> blue
       const idlePalette = {
-        HUMAN_PERM:     "#7c3aed",  // purple
+        HUMAN_PERM: "#7c3aed",  // purple
         CYBER_PHYSICAL: "#9333ea",  // violet
-        COMM_LINK:      "#2563eb",  // blue
+        COMM_LINK: "#2563eb",  // blue
       };
 
       let inPath = false;
@@ -1317,36 +1318,96 @@ function App() {
                 ? <EmptyState icon={CheckCircle} message="No MITRE mappings found." />
                 : (
                   <>
-                    {/* Tactics breakdown */}
-                    {analysis.mitre_mapping.tactic_summary && (
-                      <div className="tactic-summary-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 5, marginBottom: 10 }}>
-                        {Object.entries(analysis.mitre_mapping.tactic_summary).map(([tactic, count], i) => (
-                          <div key={i} style={{ background: "var(--bg-void)", border: "1px solid var(--border-subtle)", borderRadius: 6, padding: "5px 8px", display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 9.5 }}>
-                            <span style={{ color: "var(--text-secondary)", fontWeight: 500 }}>{tactic}</span>
-                            <span className="badge badge-ea" style={{ padding: "1px 5px", fontSize: 8 }}>{count}</span>
+                  <>
+                    <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+                      <button
+                        className={`btn ${mitreSubTab === "summary" ? "btn-primary" : "btn-ghost"}`}
+                        onClick={() => setMitreSubTab("summary")}
+                        style={{ fontSize: 9.5, padding: "4px 10px", minWidth: 80, height: 24, lineHeight: "16px" }}
+                      >
+                        Summary
+                      </button>
+                      <button
+                        className={`btn ${mitreSubTab === "mappings" ? "btn-primary" : "btn-ghost"}`}
+                        onClick={() => setMitreSubTab("mappings")}
+                        style={{ fontSize: 9.5, padding: "4px 10px", minWidth: 100, height: 24, lineHeight: "16px" }}
+                      >
+                        Edge Mappings
+                      </button>
+                    </div>
+
+                    {mitreSubTab === "summary" ? (
+                      <>
+                        {/* Tactics breakdown */}
+                        {analysis.mitre_mapping.tactic_summary && (
+                          <div className="tactic-summary-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 5, marginBottom: 10 }}>
+                            {Object.entries(analysis.mitre_mapping.tactic_summary).map(([tactic, count], i) => (
+                              <div key={i} style={{ background: "var(--bg-void)", border: "1px solid var(--border-subtle)", borderRadius: 6, padding: "5px 8px", display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 9.5 }}>
+                                <span style={{ color: "var(--text-secondary)", fontWeight: 500 }}>{tactic}</span>
+                                <span className="badge badge-ea" style={{ padding: "1px 5px", fontSize: 8 }}>{count}</span>
+                              </div>
+                            ))}
                           </div>
-                        ))}
+                        )}
+
+                        {/* Techniques list */}
+                        <div className="mitre-techniques-list" style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 300, overflowY: "auto" }}>
+                          {analysis.mitre_mapping.technique_summary.map((tech, idx) => (
+                            <div key={idx} style={{ background: "var(--bg-void)", border: "1px solid var(--border-subtle)", borderRadius: 9, padding: "8px 10px" }}>
+                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 3 }}>
+                                <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, fontWeight: 700, color: "var(--text-primary)" }}>{tech.id}</span>
+                                <span className="badge badge-object" style={{ textTransform: "uppercase" }}>{tech.tactic}</span>
+                              </div>
+                              <div style={{ fontSize: 11, fontWeight: 600, color: "var(--accent-bright)", marginBottom: 4 }}>{tech.name}</div>
+                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 9.5 }}>
+                                <span style={{ color: "var(--text-muted)" }}>Occurrences: <strong>{tech.count}</strong></span>
+                                <a href={tech.url} target="_blank" rel="noopener noreferrer" style={{ color: "var(--accent)", textDecoration: "none", display: "flex", alignItems: "center", gap: 2 }}>
+                                  Mitre Spec <ChevronRight size={10} />
+                                </a>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </>
+                    ) : (
+                      <div className="mitre-edges-list" style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: 300, overflowY: "auto" }}>
+                        {[
+                          ...(analysis.mitre_mapping.authorization_mappings || []).map(m => ({ ...m, edgeLabel: "Authorization (Ea)" })),
+                          ...(analysis.mitre_mapping.communication_mappings || []).map(m => ({ ...m, edgeLabel: "Communication (Ec)" }))
+                        ].map((m, idx) => {
+                          const status = m.mitre?.execution_status || "Successful";
+                          const statusColor = status === "Successful" ? "var(--accent-green)" : status === "Blocked by Firewall" ? "#f87171" : "#fb923c";
+                          return (
+                            <div key={idx} style={{ background: "var(--bg-void)", border: "1px solid var(--border-subtle)", borderRadius: 9, padding: "8px 10px", display: "flex", flexDirection: "column", gap: 4 }}>
+                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                                <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 8.5, color: "var(--text-muted)", textTransform: "uppercase" }}>{m.edgeLabel}</span>
+                                <span style={{ color: statusColor, fontSize: 8.5, fontWeight: 700 }}>{status}</span>
+                              </div>
+                              <div style={{ fontSize: 10, fontWeight: 700, color: "var(--text-primary)", fontFamily: "'JetBrains Mono', monospace" }}>
+                                {m.subject || m.source} → {m.object || m.target}
+                              </div>
+                              <div style={{ fontSize: 9, color: "var(--text-muted)", marginBottom: 2 }}>
+                                Action/Protocol: <strong>{m.action || m.protocol || "unknown"}</strong>
+                              </div>
+                              <div style={{ borderTop: "1px dashed var(--border-subtle)", paddingTop: 4, marginTop: 2 }}>
+                                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 2 }}>
+                                  <span style={{ fontSize: 9.5, fontWeight: 700, color: "var(--accent-bright)" }}>
+                                    {m.mitre?.id}: {m.mitre?.name}
+                                  </span>
+                                  <span style={{ fontSize: 8.5, color: "var(--text-muted)" }}>
+                                    Conf: {m.mitre?.technique_confidence}
+                                  </span>
+                                </div>
+                                <div style={{ fontSize: 9, color: "var(--text-secondary)", lineHeight: 1.35 }}>
+                                  {m.mitre?.llm_reason}
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
                     )}
-
-                    {/* Techniques list */}
-                    <div className="mitre-techniques-list" style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 300, overflowY: "auto" }}>
-                      {analysis.mitre_mapping.technique_summary.map((tech, idx) => (
-                        <div key={idx} style={{ background: "var(--bg-void)", border: "1px solid var(--border-subtle)", borderRadius: 9, padding: "8px 10px" }}>
-                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 3 }}>
-                            <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, fontWeight: 700, color: "var(--text-primary)" }}>{tech.id}</span>
-                            <span className="badge badge-object" style={{ textTransform: "uppercase" }}>{tech.tactic}</span>
-                          </div>
-                          <div style={{ fontSize: 11, fontWeight: 600, color: "var(--accent-bright)", marginBottom: 4 }}>{tech.name}</div>
-                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 9.5 }}>
-                            <span style={{ color: "var(--text-muted)" }}>Occurrences: <strong>{tech.count}</strong></span>
-                            <a href={tech.url} target="_blank" rel="noopener noreferrer" style={{ color: "var(--accent)", textDecoration: "none", display: "flex", alignItems: "center", gap: 2 }}>
-                              Mitre Spec <ChevronRight size={10} />
-                            </a>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
+                  </>
                   </>
                 )
               }
