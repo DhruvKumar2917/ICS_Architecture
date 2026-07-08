@@ -1,0 +1,12 @@
+{
+  "name": "ics-aasg-threat-modeler",
+  "version": "2.1.0",
+  "description": "ICS AASG Threat Modeler Master Controller",
+  "main": "start.js",
+  "scripts": {
+    "postinstall": "node setup.js",
+    "start": "node start.js"
+  },
+  "author": "Antigravity",
+  "license": "ISC"
+}

@@ -8,3 +8,4 @@ requests
 networkx
 openai
 python-dotenv
+pillow

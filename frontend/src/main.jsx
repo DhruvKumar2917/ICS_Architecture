@@ -12,7 +12,8 @@ import {
   Shield, Upload, FileText, AlertTriangle, ShieldAlert,
   Cpu, Compass, RefreshCw, Zap, Terminal, Lock,
   Network, UserCheck, GitBranch, Activity, Eye,
-  CheckCircle, XCircle, ChevronRight, Database, Download,
+  CheckCircle, XCircle, ChevronRight, Database,
+  Info, ExternalLink,
 } from "lucide-react";
 import "./style.css";
 
@@ -549,6 +550,26 @@ function App() {
   const [viewMode, setViewMode] = useState("asset");
   const [activeTab, setActiveTab] = useState("inputs");
   const [activePathIndex, setActivePathIndex] = useState(-1);
+  const [activeEmpiricalPathIndex, setActiveEmpiricalPathIndex] = useState(-1);
+  const [selectedTarget, setSelectedTarget] = useState("");
+  const [showEmpiricalModal, setShowEmpiricalModal] = useState(false);
+  const [prevTab, setPrevTab] = useState("inputs");
+
+  useEffect(() => {
+    if (activeTab === "empirical") {
+      setShowEmpiricalModal(true);
+    }
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (analysis?.empirical_evaluation?.paths?.length > 0) {
+      const paths = analysis.empirical_evaluation.paths;
+      const allTargets = Array.from(new Set(paths.map(p => p.path[p.path.length - 1])));
+      if (allTargets.length > 0) {
+        setSelectedTarget(allTargets[0]);
+      }
+    }
+  }, [analysis]);
   const [blastNode, setBlastNode] = useState(null);
   const [blastReport, setBlastReport] = useState(null);
   const [mitreSubTab, setMitreSubTab] = useState("summary");
@@ -560,6 +581,30 @@ function App() {
   // Lateral movement states
   const [activeLatChainIndex, setActiveLatChainIndex] = useState(-1);
   const [activeLatEventIndex, setActiveLatEventIndex] = useState(-1);
+
+  const [selectedEdge, setSelectedEdge] = useState(null);
+
+  const edgeMitreMap = React.useMemo(() => {
+    const map = new Map();
+    if (!analysis || !analysis.mitre_mapping) return map;
+
+    const auth = analysis.mitre_mapping.authorization_mappings || [];
+    const comm = analysis.mitre_mapping.communication_mappings || [];
+
+    auth.forEach(m => {
+      const mitreObj = m.mitre;
+      if (m.edge_id) map.set(m.edge_id, mitreObj);
+      if (m.subject && m.object) map.set(`${m.subject}->${m.object}`, mitreObj);
+    });
+
+    comm.forEach(m => {
+      const mitreObj = m.mitre;
+      if (m.edge_id) map.set(m.edge_id, mitreObj);
+      if (m.source && m.target) map.set(`${m.source}->${m.target}`, mitreObj);
+    });
+
+    return map;
+  }, [analysis]);
 
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
@@ -622,6 +667,12 @@ function App() {
       hops.forEach((hop) => {
         if (hop.to) nodeMitreMap.set(hop.to, hop.mitre);
       });
+    } else if (activeTab === "empirical" && activeEmpiricalPathIndex >= 0 && analysis.empirical_evaluation?.paths?.[activeEmpiricalPathIndex]) {
+      const pathRec = analysis.empirical_evaluation.paths[activeEmpiricalPathIndex];
+      const p = pathRec.path;
+      pathNodeIds = new Set(p);
+      for (let i = 0; i < p.length - 1; i++) pathEdgePairs.add(`${p[i]}->${p[i + 1]}`);
+      isFadedNode = (id) => !pathNodeIds.has(id);
     }
 
     // Threat Propagation highlighting
@@ -790,6 +841,13 @@ function App() {
         strokeWidth = inPath ? 3.0 : 0.6;
         opacity = inPath ? 1 : 0.35;
         animated = inPath;
+      } else if (activeTab === "empirical" && activeEmpiricalPathIndex >= 0) {
+        inPath = pathEdgePairs.has(key);
+        strokeColor = inPath ? "#dc2626" : "rgba(0,0,0,0.08)";
+        strokeWidth = inPath ? 3.0 : 0.6;
+        opacity = inPath ? 1 : 0.35;
+        animated = inPath;
+        dashed = inPath ? (e.data?.empirical_edge_type === "assumption-based") : (edgeType === "HUMAN_PERM");
       } else if (activeTab === "propagation" && activePropNode) {
         inPath = propEdgePairs.has(key);
         strokeColor = inPath ? "#22c55e" : "rgba(0,0,0,0.08)";
@@ -814,9 +872,15 @@ function App() {
 
       const edgeHidden = !visibleNodeIds.has(e.source) || !visibleNodeIds.has(e.target);
 
-      const label = e.data?.label || "";
+      let edgeLabel = e.data?.label || "";
+      const mitre = edgeMitreMap.get(e.id) || edgeMitreMap.get(key);
+      if (mitre && mitre.id) {
+        edgeLabel = `${edgeLabel} [${mitre.id}]`;
+      }
+
       const faded = !inPath && (
         (activeTab === "vectors" && activePathIndex >= 0) ||
+        (activeTab === "empirical" && activeEmpiricalPathIndex >= 0) ||
         (activeTab === "propagation" && activePropNode) ||
         (activeTab === "lateral" && (activeLatChainIndex >= 0 || activeLatEventIndex >= 0)) ||
         isBlastActive
@@ -825,7 +889,7 @@ function App() {
       return {
         ...e,
         type: "smoothstep",
-        label: label,
+        label: edgeLabel,
         labelStyle: { fill: faded ? "rgba(0,0,0,0.2)" : "#000000", fontSize: 8, fontWeight: 600, fontFamily: "'JetBrains Mono', monospace" },
         labelBgPadding: [4, 3],
         labelBgBorderRadius: 4,
@@ -836,7 +900,7 @@ function App() {
           strokeWidth: strokeWidth,
           opacity: opacity,
           display: edgeHidden ? "none" : "block",
-          strokeDasharray: (dashed && !inPath) ? "5 4" : undefined,
+          strokeDasharray: (activeTab === "empirical" && inPath) ? (dashed ? "5 4" : undefined) : ((dashed && !inPath) ? "5 4" : undefined),
         },
         className: inPath ? "edge-attack-flow" : undefined,
         markerEnd: { type: MarkerType.ArrowClosed, color: strokeColor, width: inPath ? 14 : 10, height: inPath ? 14 : 10 },
@@ -844,7 +908,7 @@ function App() {
     });
 
     setEdges(renderedEdges);
-  }, [analysis, viewMode, activePathIndex, blastNode, blastReport, activePropNode, propDepth, activeLatChainIndex, activeLatEventIndex, activeTab, searchQuery, zoneFilter]);
+  }, [analysis, viewMode, activePathIndex, activeEmpiricalPathIndex, blastNode, blastReport, activePropNode, propDepth, activeLatChainIndex, activeLatEventIndex, activeTab, searchQuery, zoneFilter, edgeMitreMap]);
 
   useEffect(() => { applyView(); }, [applyView]);
 
@@ -878,9 +942,11 @@ function App() {
   const handleResponse = (data) => {
     setAnalysis(data);
     setActivePathIndex(-1);
+    setActiveEmpiricalPathIndex(-1);
     clearBlast();
     setActiveLatChainIndex(-1);
     setActiveLatEventIndex(-1);
+    setSelectedEdge(null);
 
     // Auto-select first threat propagation node if available
     if (data.threat_propagation && Object.keys(data.threat_propagation).length > 0) {
@@ -956,139 +1022,6 @@ function App() {
     a.click();
   };
 
-  const downloadRiskVectorsJson = () => {
-    if (!analysis?.attack_paths) return;
-    const payload = {
-      export_type: "risk_vectors",
-      exported_at: new Date().toISOString(),
-      total_vectors: analysis.attack_paths.length,
-      risk_vectors: analysis.attack_paths.map((path, idx) => ({
-        vector_index: idx + 1,
-        path: path.path,
-        path_label: path.path.join(" → "),
-        overall_risk: path.overall_risk,
-        risk_score: path.risk_score,
-        impact_score: path.impact_score,
-        likelihood_score: path.likelihood_score,
-        severity: path.severity,
-        narrative: path.narrative,
-        realism_warnings: path.realism_warnings || [],
-        steps: path.steps || [],
-        mitre_hops: (path.mitre_hops || []).map((hop) => ({
-          from: hop.from,
-          to: hop.to,
-          edge_type: hop.edge_type,
-          chain_position: hop.chain_position,
-          prerequisites_met: hop.prerequisites_met,
-          reachability_verified: hop.reachability_verified,
-          mitre: hop.mitre ? {
-            technique_id: hop.mitre.id,
-            technique_name: hop.mitre.name,
-            tactic: hop.mitre.tactic,
-            severity: hop.mitre.severity,
-            confidence: hop.mitre.technique_confidence,
-            llm_confidence: hop.mitre.llm_confidence,
-            url: hop.mitre.url,
-            llm_reason: hop.mitre.llm_reason,
-            real_world_example: hop.mitre.real_world_example,
-            suppressed: hop.mitre.suppressed,
-            suppression_reason: hop.mitre.suppression_reason,
-          } : null,
-          ...(hop.formal_analysis ? { formal_analysis: hop.formal_analysis } : {}),
-        })),
-      })),
-      node_rankings: analysis.risk_analysis?.node_rankings || [],
-    };
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = "ics-risk-vectors.json";
-    a.click();
-  };
-
-  const downloadMitreJson = () => {
-    if (!analysis?.mitre_mapping) return;
-    const mitre = analysis.mitre_mapping;
-    const payload = {
-      export_type: "mitre_attack_ics_mapping",
-      exported_at: new Date().toISOString(),
-      mapping_mode: mitre.mapping_mode || "llm",
-      context_aware: mitre.context_aware || false,
-      context_stats: mitre.context_stats || {},
-      llm_stats: mitre.llm_stats || {},
-      tactic_summary: mitre.tactic_summary || {},
-      technique_summary: (mitre.technique_summary || []).map((tech) => ({
-        technique_id: tech.id,
-        technique_name: tech.name,
-        tactic: tech.tactic,
-        severity: tech.severity,
-        url: tech.url,
-        real_world_example: tech.real_world_example || "",
-        occurrence_count: tech.count,
-        suppressed_count: tech.suppressed_count || 0,
-        avg_confidence: tech.avg_confidence,
-        reachability_verified_count: tech.reachability_verified_count || 0,
-        firewall_verified_count: tech.firewall_verified_count || 0,
-      })),
-      authorization_mappings: (mitre.authorization_mappings || []).map((m) => ({
-        edge_id: m.edge_id,
-        subject: m.subject,
-        action: m.action,
-        object: m.object,
-        source_zone: m.source_zone,
-        target_zone: m.target_zone,
-        mitre: {
-          technique_id: m.mitre?.id,
-          technique_name: m.mitre?.name,
-          tactic: m.mitre?.tactic,
-          severity: m.mitre?.severity,
-          confidence: m.mitre?.technique_confidence,
-          llm_confidence: m.mitre?.llm_confidence,
-          url: m.mitre?.url,
-          llm_reason: m.mitre?.llm_reason,
-          real_world_example: m.mitre?.real_world_example,
-          reachability_verified: m.mitre?.reachability_verified,
-          firewall_verified: m.mitre?.firewall_verified,
-          comm_edge_exists: m.mitre?.comm_edge_exists,
-          suppressed: m.mitre?.suppressed,
-          suppression_reason: m.mitre?.suppression_reason,
-          validation_warnings: m.mitre?.validation_warnings || [],
-        },
-      })),
-      communication_mappings: (mitre.communication_mappings || []).map((m) => ({
-        edge_id: m.edge_id,
-        source: m.source,
-        target: m.target,
-        protocol: m.protocol,
-        source_zone: m.source_zone,
-        target_zone: m.target_zone,
-        mitre: {
-          technique_id: m.mitre?.id,
-          technique_name: m.mitre?.name,
-          tactic: m.mitre?.tactic,
-          severity: m.mitre?.severity,
-          confidence: m.mitre?.technique_confidence,
-          llm_confidence: m.mitre?.llm_confidence,
-          url: m.mitre?.url,
-          llm_reason: m.mitre?.llm_reason,
-          real_world_example: m.mitre?.real_world_example,
-          reachability_verified: m.mitre?.reachability_verified,
-          firewall_verified: m.mitre?.firewall_verified,
-          comm_edge_exists: m.mitre?.comm_edge_exists,
-          suppressed: m.mitre?.suppressed,
-          suppression_reason: m.mitre?.suppression_reason,
-          validation_warnings: m.mitre?.validation_warnings || [],
-        },
-      })),
-      formal_analysis: analysis.formal_analysis || mitre.formal_analysis || {},
-    };
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = "ics-mitre-mapping.json";
-    a.click();
-  };
-
   // ---------------------------------------------------------------------------
   // UI helpers
   // ---------------------------------------------------------------------------
@@ -1096,6 +1029,7 @@ function App() {
     { id: "inputs", label: "Inputs", icon: Upload, alwaysOn: true },
     { id: "audit", label: "Audit", icon: AlertTriangle },
     { id: "vectors", label: "Risk Vectors", icon: ShieldAlert },
+    { id: "empirical", label: "Empirical Eval", icon: Compass },
     { id: "risk", label: "Risk Assets", icon: Activity },
     { id: "mitre", label: "MITRE ATT&CK", icon: Shield },
     { id: "propagation", label: "Threat Prop", icon: Zap },
@@ -1128,7 +1062,13 @@ function App() {
             <button
               key={t.id}
               className={`tab-btn ${activeTab === t.id ? "active" : ""}`}
-              onClick={() => setActiveTab(t.id)}
+              onClick={() => {
+                if (t.id === "empirical") {
+                  setPrevTab(activeTab);
+                  setShowEmpiricalModal(true);
+                }
+                setActiveTab(t.id);
+              }}
               disabled={!t.alwaysOn && !analysis}
               title={t.label}
             >
@@ -1240,6 +1180,23 @@ function App() {
           </div>
         )}
 
+        {/* ── TAB: Empirical Evaluation ────────────────────────────── */}
+        {activeTab === "empirical" && analysis && (
+          <div className="tab-content animate-in">
+            <div className="card">
+              <div className="card-title"><Compass size={14} /> Empirical Evaluation</div>
+              <p className="hint">A detailed 75%-wide evaluation panel is active.</p>
+              <button 
+                className="btn btn-primary" 
+                style={{ width: "100%", marginTop: 10, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}
+                onClick={() => setShowEmpiricalModal(true)}
+              >
+                <Compass size={14} /> Open Evaluation Panel
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* ── TAB: Audit ──────────────────────────────────────────── */}
         {activeTab === "audit" && analysis && (
           <div className="tab-content animate-in">
@@ -1288,14 +1245,7 @@ function App() {
         {activeTab === "vectors" && analysis && (
           <div className="tab-content animate-in">
             <div className="card">
-              <div className="card-title" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span style={{ display: "flex", alignItems: "center", gap: 5 }}><ShieldAlert size={14} /> Risk Vectors</span>
-                {analysis.attack_paths?.length > 0 && (
-                  <button className="btn btn-ghost" style={{ padding: "3px 8px", fontSize: "9px", display: "flex", alignItems: "center", gap: 3 }} onClick={downloadRiskVectorsJson}>
-                    <Download size={10} /> Download JSON
-                  </button>
-                )}
-              </div>
+              <div className="card-title"><ShieldAlert size={14} /> Risk Vectors</div>
               <p className="hint">Authorization-driven attack paths from entry subjects to critical objects:</p>
               {(!analysis.attack_paths || analysis.attack_paths.length === 0)
                 ? <EmptyState icon={CheckCircle} message="No risk vectors found." />
@@ -1452,50 +1402,12 @@ function App() {
         {activeTab === "mitre" && analysis && (
           <div className="tab-content animate-in">
             <div className="card">
-              <div className="card-title" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span style={{ display: "flex", alignItems: "center", gap: 5 }}><Shield size={14} /> MITRE ATT&CK for ICS Mapping</span>
-                {analysis.mitre_mapping?.technique_summary?.length > 0 && (
-                  <button className="btn btn-ghost" style={{ padding: "3px 8px", fontSize: "9px", display: "flex", alignItems: "center", gap: 3 }} onClick={downloadMitreJson}>
-                    <Download size={10} /> Download JSON
-                  </button>
-                )}
-              </div>
+              <div className="card-title"><Shield size={14} /> MITRE ATT&CK for ICS Mapping</div>
               <p className="hint">Identified threat techniques mapped to authorization (Ea) and communication (Ec) edges:</p>
               {(!analysis.mitre_mapping?.technique_summary || analysis.mitre_mapping.technique_summary.length === 0)
                 ? <EmptyState icon={CheckCircle} message="No MITRE mappings found." />
                 : (
                   <>
-<<<<<<< HEAD
-                    {/* Context stats summary */}
-                    {analysis.mitre_mapping.context_stats && (
-                      <div className="stat-grid" style={{ marginBottom: 10 }}>
-                        <div className="stat-cell">
-                          <span className="stat-val" style={{ color: "var(--text-primary)" }}>{analysis.mitre_mapping.context_stats.total_mappings || 0}</span>
-                          <span className="stat-label">Total Mappings</span>
-                        </div>
-                        <div className="stat-cell">
-                          <span className="stat-val" style={{ color: "var(--accent-bright)" }}>{analysis.mitre_mapping.technique_summary.length}</span>
-                          <span className="stat-label">Techniques</span>
-                        </div>
-                        <div className="stat-cell">
-                          <span className="stat-val">{analysis.mitre_mapping.context_stats.reachability_verified || 0}</span>
-                          <span className="stat-label">Reach Verified</span>
-                        </div>
-                        <div className="stat-cell">
-                          <span className="stat-val">{analysis.mitre_mapping.context_stats.suppressed || 0}</span>
-                          <span className="stat-label">Suppressed</span>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Tactics breakdown */}
-                    {analysis.mitre_mapping.tactic_summary && (
-                      <div className="tactic-summary-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 5, marginBottom: 10 }}>
-                        {Object.entries(analysis.mitre_mapping.tactic_summary).map(([tactic, count], i) => (
-                          <div key={i} style={{ background: "var(--bg-void)", border: "1px solid var(--border-subtle)", borderRadius: 6, padding: "5px 8px", display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 9.5 }}>
-                            <span style={{ color: "var(--text-secondary)", fontWeight: 500 }}>{tactic}</span>
-                            <span className="badge badge-ea" style={{ padding: "1px 5px", fontSize: 8 }}>{count}</span>
-=======
                   <>
                     <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
                       <button
@@ -1525,7 +1437,6 @@ function App() {
                                 <span className="badge badge-ea" style={{ padding: "1px 5px", fontSize: 8 }}>{count}</span>
                               </div>
                             ))}
->>>>>>> a2cb3445988cf7eebc21fb1b8525e72a9b0f52b9
                           </div>
                         )}
 
@@ -1586,34 +1497,7 @@ function App() {
                         })}
                       </div>
                     )}
-<<<<<<< HEAD
-
-                    {/* Techniques list */}
-                    <div className="mitre-techniques-list" style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 300, overflowY: "auto" }}>
-                      {analysis.mitre_mapping.technique_summary.map((tech, idx) => (
-                        <div key={idx} style={{ background: "var(--bg-void)", border: "1px solid var(--border-subtle)", borderRadius: 9, padding: "8px 10px" }}>
-                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 3 }}>
-                            <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, fontWeight: 700, color: "var(--text-primary)" }}>{tech.id}</span>
-                            <span className="badge badge-object" style={{ textTransform: "uppercase" }}>{tech.tactic}</span>
-                          </div>
-                          <div style={{ fontSize: 11, fontWeight: 600, color: "var(--accent-bright)", marginBottom: 4 }}>{tech.name}</div>
-                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 9.5 }}>
-                            <span style={{ color: "var(--text-muted)" }}>Occurrences: <strong>{tech.count}</strong></span>
-                            <a href={tech.url} target="_blank" rel="noopener noreferrer" style={{ color: "var(--accent)", textDecoration: "none", display: "flex", alignItems: "center", gap: 2 }}>
-                              Mitre Spec <ChevronRight size={10} />
-                            </a>
-                          </div>
-                          {tech.real_world_example && (
-                            <div style={{ fontSize: 9, color: "var(--text-muted)", marginTop: 4, fontStyle: "italic", borderTop: "1px solid var(--border-subtle)", paddingTop: 4 }}>
-                              ⚠ {tech.real_world_example}
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-=======
                   </>
->>>>>>> a2cb3445988cf7eebc21fb1b8525e72a9b0f52b9
                   </>
                 )
               }
@@ -1986,6 +1870,20 @@ function App() {
           panOnScroll
           panOnScrollMode="free"
           zoomOnScroll={false}
+          onEdgeClick={(event, edge) => {
+            const key = `${edge.source}->${edge.target}`;
+            const mitre = edgeMitreMap.get(edge.id) || edgeMitreMap.get(key);
+            setSelectedEdge({
+              id: edge.id,
+              source: edge.source,
+              target: edge.target,
+              label: edge.data?.label || edge.label,
+              edge_type: edge.data?.edge_type || "COMM_LINK",
+              mitre: mitre
+            });
+          }}
+          onNodeClick={() => setSelectedEdge(null)}
+          onPaneClick={() => setSelectedEdge(null)}
           defaultEdgeOptions={{
             type: "smoothstep",
             animated: false,
@@ -2007,6 +1905,447 @@ function App() {
             style={{ background: "#ffffff", border: "1px solid var(--border-default)" }}
           />
         </ReactFlow>
+
+        {/* Selected Edge threats / mapping details */}
+        {selectedEdge && (
+          <div className="edge-detail-panel animate-in">
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, borderBottom: "1px solid var(--border-subtle)", paddingBottom: 8 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <Shield size={14} style={{ color: "var(--accent)" }} />
+                <h3 style={{ fontSize: 11, fontWeight: 700, margin: 0, letterSpacing: "-0.01em" }}>Edge Threat Map</h3>
+              </div>
+              <button
+                onClick={() => setSelectedEdge(null)}
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  fontSize: 16,
+                  cursor: "pointer",
+                  color: "var(--text-muted)",
+                  padding: "0 4px",
+                  lineHeight: 1
+                }}
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="panel-scroll" style={{ maxHeight: "380px", overflowY: "auto", display: "flex", flexDirection: "column", gap: 10 }}>
+              {/* Edge connection */}
+              <div>
+                <div style={{ fontSize: 8.5, color: "var(--text-muted)", textTransform: "uppercase", fontWeight: 700, letterSpacing: "0.05em", marginBottom: 3 }}>
+                  Asset Connection
+                </div>
+                <div style={{ fontSize: 11, fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", color: "var(--text-primary)" }}>
+                  {selectedEdge.source} <span style={{ color: "var(--text-muted)", fontSize: 10 }}>➔</span> {selectedEdge.target}
+                </div>
+                <div style={{ display: "flex", gap: 4, marginTop: 4 }}>
+                  <span className={`badge ${selectedEdge.edge_type === 'HUMAN_PERM' ? 'badge-critical' : 'badge-allowed'}`} style={{ fontSize: 8, padding: "1px 5px" }}>
+                    {selectedEdge.edge_type === 'HUMAN_PERM' ? 'Auth (Ea)' : 'Comm (Ec)'}
+                  </span>
+                  {selectedEdge.label && (
+                    <span className="badge" style={{ fontSize: 8, padding: "1px 5px", background: "var(--bg-surface)", color: "var(--text-secondary)", border: "1px solid var(--border-default)" }}>
+                      {selectedEdge.label.split(" [")[0]}
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {selectedEdge.mitre ? (
+                <>
+                  <div style={{ borderTop: "1px dashed var(--border-subtle)", paddingTop: 8 }}>
+                    <div style={{ fontSize: 8.5, color: "var(--text-muted)", textTransform: "uppercase", fontWeight: 700, letterSpacing: "0.05em", marginBottom: 4 }}>
+                      Mapped MITRE ATT&CK Technique
+                    </div>
+                    <div style={{ fontSize: 11.5, fontWeight: 700, color: "var(--text-primary)", marginBottom: 4 }}>
+                      {selectedEdge.mitre.id}: {selectedEdge.mitre.name}
+                    </div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                      <span className="badge badge-object" style={{ fontSize: 8, padding: "1px 5px" }}>
+                        {selectedEdge.mitre.tactic}
+                      </span>
+                      <span className={`badge ${
+                        selectedEdge.mitre.severity === 'CRITICAL' ? 'badge-critical' :
+                        selectedEdge.mitre.severity === 'HIGH' ? 'badge-high' :
+                        selectedEdge.mitre.severity === 'MEDIUM' ? 'badge-ea' : 'badge-low'
+                      }`} style={{ fontSize: 8, padding: "1px 5px" }}>
+                        {selectedEdge.mitre.severity}
+                      </span>
+                      <span className="badge" style={{ fontSize: 8, padding: "1px 5px", background: "var(--bg-void)", border: "1px solid var(--border-default)" }}>
+                        Confidence: {Math.round(selectedEdge.mitre.technique_confidence * 100)}%
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Verification stats */}
+                  <div style={{ background: "var(--bg-card-hover)", borderRadius: 8, padding: "8px 10px", border: "1px solid var(--border-subtle)", display: "flex", flexDirection: "column", gap: 4 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 9.5 }}>
+                      <span style={{ color: "var(--text-secondary)", fontWeight: 500 }}>Reachability Verified:</span>
+                      <span style={{ display: "flex", alignItems: "center", gap: 3, fontWeight: 700, color: selectedEdge.mitre.reachability_verified ? "#16a34a" : "#dc2626" }}>
+                        {selectedEdge.mitre.reachability_verified ? <CheckCircle size={10} /> : <XCircle size={10} />}
+                        {selectedEdge.mitre.reachability_verified ? "Yes" : "No"}
+                      </span>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 9.5 }}>
+                      <span style={{ color: "var(--text-secondary)", fontWeight: 500 }}>Firewall Allowed:</span>
+                      <span style={{ display: "flex", alignItems: "center", gap: 3, fontWeight: 700, color: selectedEdge.mitre.firewall_verified ? "#16a34a" : "#dc2626" }}>
+                        {selectedEdge.mitre.firewall_verified ? <CheckCircle size={10} /> : <XCircle size={10} />}
+                        {selectedEdge.mitre.firewall_verified ? "Yes" : "No"}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* LLM Reason */}
+                  {selectedEdge.mitre.llm_reason && (
+                    <div>
+                      <div style={{ fontSize: 8.5, color: "var(--text-muted)", textTransform: "uppercase", fontWeight: 700, letterSpacing: "0.05em", marginBottom: 3 }}>
+                        Technique Justification
+                      </div>
+                      <p style={{ fontSize: 10, color: "var(--text-secondary)", lineHeight: 1.4, margin: 0, background: "var(--bg-card-hover)", padding: "6px 8px", borderRadius: 6, border: "1px solid var(--border-subtle)" }}>
+                        {selectedEdge.mitre.llm_reason}
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Real world example */}
+                  {selectedEdge.mitre.real_world_example && (
+                    <div>
+                      <div style={{ fontSize: 8.5, color: "var(--text-muted)", textTransform: "uppercase", fontWeight: 700, letterSpacing: "0.05em", marginBottom: 3 }}>
+                        Real-world Instance Reference
+                      </div>
+                      <p style={{ fontSize: 9.5, color: "var(--text-muted)", fontStyle: "italic", lineHeight: 1.35, margin: 0 }}>
+                        {selectedEdge.mitre.real_world_example}
+                      </p>
+                    </div>
+                  )}
+
+                  {/* View MITRE Spec Link */}
+                  {selectedEdge.mitre.url && (
+                    <a
+                      href={selectedEdge.mitre.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="btn btn-secondary"
+                      style={{
+                        marginTop: 4,
+                        fontSize: 9.5,
+                        justifyContent: "center",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 4,
+                        width: "100%",
+                        textDecoration: "none",
+                        height: 28,
+                        border: "1px solid var(--border-default)"
+                      }}
+                    >
+                      View MITRE Specification
+                      <ExternalLink size={10} />
+                    </a>
+                  )}
+                </>
+              ) : (
+                <div style={{ borderTop: "1px dashed var(--border-subtle)", paddingTop: 8, color: "var(--text-muted)", fontSize: 10.5, fontStyle: "italic" }}>
+                  No active threat technique mapped to this edge.
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ── Empirical Evaluation Modal (75% screen width - Light Theme) ── */}
+        {showEmpiricalModal && analysis && (
+          <div style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            width: "100vw",
+            height: "100vh",
+            backgroundColor: "rgba(0, 0, 0, 0.35)",
+            backdropFilter: "blur(4px)",
+            zIndex: 9999,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+          onClick={() => {
+            setShowEmpiricalModal(false);
+            if (activeTab === "empirical") {
+              setActiveTab(prevTab || "vectors");
+            }
+          }}
+          >
+            <div style={{
+              width: "75vw",
+              height: "80vh",
+              backgroundColor: "var(--bg-card)",
+              border: "1px solid var(--border-default)",
+              borderRadius: "12px",
+              boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.15), 0 10px 10px -5px rgba(0, 0, 0, 0.05)",
+              display: "flex",
+              flexDirection: "column",
+              overflow: "hidden",
+              color: "var(--text-primary)"
+            }}
+            onClick={(e) => e.stopPropagation()}
+            >
+              {/* Modal Header */}
+              <div style={{
+                padding: "16px 24px",
+                borderBottom: "1px solid var(--border-subtle)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                background: "var(--bg-deep)"
+              }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <Compass size={18} style={{ color: "#7c3aed" }} />
+                  <span style={{ fontSize: 15, fontWeight: 700, letterSpacing: "0.02em" }}>Empirical Attack Surface Evaluation</span>
+                </div>
+                <button 
+                  onClick={() => {
+                    setShowEmpiricalModal(false);
+                    if (activeTab === "empirical") {
+                      setActiveTab(prevTab || "vectors");
+                    }
+                  }}
+                  style={{
+                    background: "none",
+                    border: "none",
+                    color: "var(--text-muted)",
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    padding: 4,
+                    borderRadius: "50%",
+                    transition: "background-color 0.2s"
+                  }}
+                  onMouseOver={(e) => e.currentTarget.style.backgroundColor = "rgba(0, 0, 0, 0.05)"}
+                  onMouseOut={(e) => e.currentTarget.style.backgroundColor = "transparent"}
+                >
+                  <XCircle size={20} />
+                </button>
+              </div>
+
+              {/* Modal Body */}
+              <div style={{
+                flex: 1,
+                display: "flex",
+                overflow: "hidden"
+              }}>
+                {(!analysis.empirical_evaluation || !analysis.empirical_evaluation.paths || analysis.empirical_evaluation.paths.length === 0) ? (
+                  <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-muted)" }}>No empirical paths found.</div>
+                ) : (
+                  (() => {
+                    const paths = analysis.empirical_evaluation.paths;
+                    const allTargets = Array.from(new Set(paths.map(p => p.path[p.path.length - 1])));
+                    const currentTarget = selectedTarget || allTargets[0];
+                    const targetPaths = paths.filter(p => p.path[p.path.length - 1] === currentTarget);
+                    const rolesForTarget = Array.from(new Set(targetPaths.map(p => p.path[0])));
+                    
+                    const avgTel = targetPaths.length > 0 
+                      ? (targetPaths.reduce((sum, p) => sum + p.tel, 0) / targetPaths.length).toFixed(1) 
+                      : "0.0";
+                    const maxTel = targetPaths.length > 0 
+                      ? Math.max(...targetPaths.map(p => p.tel)) 
+                      : 0;
+
+                    return (
+                      <>
+                        {/* Left Sidebar */}
+                        <div style={{
+                          width: "30%",
+                          borderRight: "1px solid var(--border-subtle)",
+                          padding: "20px 24px",
+                          overflowY: "auto",
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: 15,
+                          background: "var(--bg-deep)"
+                        }}>
+                          <div>
+                            <label style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--text-secondary)", display: "block", marginBottom: 6 }}>Select Target Asset:</label>
+                            <select 
+                              value={currentTarget} 
+                              onChange={(e) => {
+                                setSelectedTarget(e.target.value);
+                                setActiveEmpiricalPathIndex(-1);
+                              }}
+                              style={{ width: "100%", padding: "8px 12px", background: "var(--bg-card)", border: "1px solid var(--border-default)", borderRadius: 4, color: "var(--text-primary)", outline: "none" }}
+                            >
+                              {allTargets.map(t => (
+                                <option key={t} value={t}>{t}</option>
+                              ))}
+                            </select>
+                          </div>
+
+                          {rolesForTarget.map(role => {
+                            const rAaf = analysis.empirical_evaluation.role_level_aaf[role] || 1.0;
+                            return (
+                              <div key={role} style={{ background: "rgba(124, 58, 237, 0.05)", border: "1px solid rgba(124, 58, 237, 0.2)", borderRadius: 8, padding: 16 }}>
+                                <div style={{ fontSize: 9, fontWeight: 700, textTransform: "uppercase", color: "#7c3aed" }}>Role-Level AAF</div>
+                                <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginTop: 5 }}>
+                                  <span style={{ fontSize: 36, fontWeight: 800, color: "#7c3aed" }}>{rAaf}x</span>
+                                  <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>for role <strong>{role}</strong></span>
+                                </div>
+                                <p style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 6, lineHeight: 1.4, margin: 0 }}>
+                                  One privilege authorization boundary decision grants access to <strong>{rAaf}</strong> distinct high-impact cyber-physical capabilities downstream.
+                                </p>
+                              </div>
+                            );
+                          })}
+
+                          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                            <div style={{ padding: 12, textAlign: "center", border: "1px solid var(--border-default)", borderRadius: 8, background: "var(--bg-card)" }}>
+                              <div style={{ fontSize: 9, textTransform: "uppercase", color: "var(--text-muted)" }}>Avg Trust TEL</div>
+                              <div style={{ fontSize: 20, fontWeight: 700, marginTop: 4, color: "#b45309" }}>{avgTel}</div>
+                            </div>
+                            <div style={{ padding: 12, textAlign: "center", border: "1px solid var(--border-default)", borderRadius: 8, background: "var(--bg-card)" }}>
+                              <div style={{ fontSize: 9, textTransform: "uppercase", color: "var(--text-muted)" }}>Max Trust TEL</div>
+                              <div style={{ fontSize: 20, fontWeight: 700, marginTop: 4, color: "#dc2626" }}>{maxTel}</div>
+                            </div>
+                          </div>
+
+                          <div style={{ padding: 12, border: "1px solid var(--border-default)", borderRadius: 8, background: "var(--bg-card)", fontSize: 10.5, color: "var(--text-muted)", lineHeight: 1.4 }}>
+                            <strong>Decomposition Analysis:</strong> The boundary transition is explicit. Downstream reachability propagates via protocol trust assumptions.
+                          </div>
+                        </div>
+
+                        {/* Right Panel */}
+                        <div style={{
+                          width: "70%",
+                          padding: "24px",
+                          overflowY: "auto",
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: 15,
+                          background: "var(--bg-card)"
+                        }}>
+                          <div style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.03em", color: "var(--text-secondary)" }}>Attack Path Breakdown ({targetPaths.length})</div>
+                          
+                          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                            {paths.map((path, idx) => {
+                              const isSelected = activeEmpiricalPathIndex === idx;
+                              const isForCurrentTarget = path.path[path.path.length - 1] === currentTarget;
+                              if (!isForCurrentTarget) return null;
+
+                              return (
+                                <div
+                                  key={idx}
+                                  onClick={() => {
+                                    clearBlast();
+                                    setActiveEmpiricalPathIndex(isSelected ? -1 : idx);
+                                  }}
+                                  style={{
+                                    border: isSelected ? "1px solid #7c3aed" : "1px solid var(--border-default)",
+                                    borderRadius: 8,
+                                    padding: 16,
+                                    background: isSelected ? "rgba(124, 58, 237, 0.03)" : "var(--bg-card)",
+                                    cursor: "pointer",
+                                    transition: "all 0.2s ease"
+                                  }}
+                                >
+                                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                                      <span style={{ fontWeight: 700, fontSize: 13, color: isSelected ? "#7c3aed" : "var(--text-primary)" }}>Path #{idx + 1}</span>
+                                      <span style={{ fontSize: 9.5, padding: "2px 6px", background: "rgba(34, 197, 94, 0.1)", color: "#16a34a", borderRadius: 4, border: "1px solid rgba(34, 197, 94, 0.15)" }}>{path.length} hops</span>
+                                    </div>
+                                    <div style={{ display: "flex", gap: 10 }}>
+                                      <div style={{ fontSize: 10, padding: "3px 8px", background: "rgba(124, 58, 237, 0.08)", border: "1px solid rgba(124, 58, 237, 0.15)", color: "#7c3aed", borderRadius: 4, fontWeight: 600 }}>AAF: {path.aaf}x</div>
+                                      <div style={{ fontSize: 10, padding: "3px 8px", background: "rgba(234, 179, 8, 0.08)", border: "1px solid rgba(234, 179, 8, 0.15)", color: "#b45309", borderRadius: 4, fontWeight: 600 }}>TEL: {path.tel}</div>
+                                      <div style={{ fontSize: 10, padding: "3px 8px", background: "rgba(6, 182, 212, 0.08)", border: "1px solid rgba(6, 182, 212, 0.15)", color: "#0891b2", borderRadius: 4, fontWeight: 600 }}>CZIS: {path.czis}</div>
+                                    </div>
+                                  </div>
+
+                                  <div style={{ 
+                                    margin: "12px 0",
+                                    padding: 10,
+                                    background: "var(--bg-deep)",
+                                    borderRadius: 6,
+                                    fontFamily: "'JetBrains Mono', monospace",
+                                    fontSize: 11,
+                                    lineHeight: 1.5,
+                                    display: "flex",
+                                    flexWrap: "wrap",
+                                    alignItems: "center",
+                                    gap: 6
+                                  }}>
+                                    {path.path.map((node, i) => {
+                                      const isLast = i === path.path.length - 1;
+                                      const isFirst = i === 0;
+                                      let nextHopType = null;
+                                      if (!isLast && path.hops?.[i]) {
+                                        nextHopType = path.hops[i].edge_type;
+                                      }
+
+                                      return (
+                                        <React.Fragment key={i}>
+                                          <span style={{ 
+                                            color: isFirst ? "#2563eb" : isLast ? "#dc2626" : "var(--text-primary)", 
+                                            fontWeight: (isFirst || isLast) ? 700 : 400,
+                                            padding: "2px 6px",
+                                            background: isFirst ? "rgba(37, 99, 235, 0.06)" : isLast ? "rgba(220, 38, 38, 0.06)" : "var(--bg-card)",
+                                            border: isFirst ? "1px solid rgba(37, 99, 235, 0.15)" : isLast ? "1px solid rgba(220, 38, 38, 0.15)" : "1px solid var(--border-subtle)",
+                                            borderRadius: 4
+                                          }}>
+                                            {node}
+                                          </span>
+                                          {!isLast && (
+                                            <span style={{ 
+                                              color: nextHopType === "policy-enforced" ? "#7c3aed" : "#b45309",
+                                              fontSize: 12,
+                                              fontWeight: 700
+                                            }}>
+                                              {nextHopType === "policy-enforced" ? " ➔ " : " ⤍ "}
+                                            </span>
+                                          )}
+                                        </React.Fragment>
+                                      );
+                                    })}
+                                  </div>
+
+                                  <div style={{ display: "flex", gap: 20, fontSize: 10, color: "var(--text-secondary)" }}>
+                                    <div><strong>Zones:</strong> {path.zone_sequence.join(" ➔ ")}</div>
+                                    {path.mitre_techniques?.length > 0 && (
+                                      <div><strong>MITRE:</strong> {path.mitre_techniques.join(", ")}</div>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      </>
+                    );
+                  })()
+                )}
+              </div>
+
+              {/* Modal Footer */}
+              <div style={{
+                padding: "12px 24px",
+                borderTop: "1px solid var(--border-subtle)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "flex-end",
+                background: "var(--bg-deep)"
+              }}>
+                <button 
+                  className="btn btn-secondary"
+                  onClick={() => {
+                    setShowEmpiricalModal(false);
+                    if (activeTab === "empirical") {
+                      setActiveTab(prevTab || "vectors");
+                    }
+                  }}
+                >
+                  Close Panel
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </main>
     </div>
   );
