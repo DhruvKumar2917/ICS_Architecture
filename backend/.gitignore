@@ -12,3 +12,5 @@ venv/
 .venv/
 env/
 ENV/
+gitignore
+.code-review-graphignore
