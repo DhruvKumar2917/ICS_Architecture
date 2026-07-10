@@ -1,8 +1,8 @@
 {
   "scripts": {
-    "dev": "vite",
+    "dev": "vite --port 1901",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview --port 1901"
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",
